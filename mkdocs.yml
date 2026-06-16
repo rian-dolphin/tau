@@ -63,5 +63,6 @@ nav:
       - "Phase 2: AI Provider Layer": architecture/phase-2-ai-provider-layer.md
       - "Phase 3: Pure Agent Loop": architecture/phase-3-agent-loop.md
       - "Phase 4: AgentHarness": architecture/phase-4-agent-harness.md
+      - "Phase 5: Built-in Coding Tools": architecture/phase-5-coding-tools.md
   - ADRs:
       - Use Textual for TUI: adr/0001-use-textual-for-tui.md

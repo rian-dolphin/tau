@@ -219,7 +219,12 @@ async def test_agent_loop_has_no_default_max_turn_limit() -> None:
             ]
             for _ in range(9)
         ]
-        + [[ProviderResponseStartEvent(model="fake"), ProviderResponseEndEvent(message=final_assistant)]]
+        + [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=final_assistant),
+            ]
+        ]
     )
 
     events = await _collect(

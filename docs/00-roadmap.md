@@ -13,21 +13,21 @@ tau_coding   CLI app, resources, skills, extensions, commands, UI integration
 
 ## Phase plan
 
-1. Project foundation and design docs.
-2. Core message, tool, and event types.
-3. Provider interface with fake and real providers.
-4. Pure agent loop.
-5. Reusable `AgentHarness`.
-6. Built-in coding tools.
-7. Non-interactive print-mode CLI.
-8. Append-only session tree persistence.
-9. Coding session wrapper with commands.
-10. Skills, prompt templates, and system prompt assembly.
-11. Rich renderers.
-12. Textual TUI behind an adapter boundary.
-13. Extensions.
-14. Compaction and context management.
-15. Packaging, docs, and examples.
+0. Project foundation and design docs.
+1. Core message, tool, and event types.
+2. Provider interface with fake and real providers.
+3. Pure agent loop.
+4. Reusable `AgentHarness`.
+5. Built-in coding tools.
+6. Non-interactive print-mode CLI.
+7. Append-only session tree persistence.
+8. Coding session wrapper with commands.
+9. Skills, prompt templates, and system prompt assembly.
+10. Rich renderers.
+11. Textual TUI behind an adapter boundary.
+12. Extensions.
+13. Compaction and context management.
+14. Packaging, docs, and examples.
 
 ## Phase 0 deliverables
 
