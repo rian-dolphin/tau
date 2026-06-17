@@ -16,6 +16,8 @@ Tau now has a minimal interactive TUI that:
 - accepts user prompts through a Textual input widget
 - streams `AgentEvent` values into TUI display state
 - displays assistant messages, tool events, status messages, and errors
+- shows a dark-mode session sidebar with model, cwd, tools, skills, and prompt templates
+- restores previous session messages into the visible transcript
 - supports existing `/help` and `/exit` command handling
 - supports Escape to request cancellation
 - stores the early default TUI session at `.tau/sessions/default.jsonl`
@@ -90,7 +92,8 @@ It uses:
 
 - `Header`
 - `Footer`
-- `Static` for status
+- `Static` for status and sidebar content
+- `Horizontal` and `Vertical` containers for the sidebar/main layout
 - `RichLog` for transcript output
 - `Input` for prompt submission
 

@@ -3,7 +3,7 @@
 from pathlib import Path
 
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
+from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Header, Input, Static
 from textual.worker import Worker
 
@@ -16,7 +16,7 @@ from tau_coding.session import (
 )
 from tau_coding.tui.adapter import TuiEventAdapter
 from tau_coding.tui.state import TuiState
-from tau_coding.tui.widgets import TranscriptView
+from tau_coding.tui.widgets import SessionSidebar, TranscriptView
 
 
 class TauTuiApp(App[None]):
@@ -26,21 +26,58 @@ class TauTuiApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+        background: #0f1117;
+        color: #e6edf3;
+    }
+
+    Header {
+        background: #161b22;
+        color: #f0f6fc;
+        dock: top;
+    }
+
+    Footer {
+        background: #161b22;
+        color: #8b949e;
     }
 
     #status {
         height: 1;
         padding: 0 1;
-        color: $text-muted;
+        background: #0f1117;
+        color: #8b949e;
+    }
+
+    #workspace {
+        height: 1fr;
+    }
+
+    #sidebar {
+        width: 32;
+        min-width: 28;
+        padding: 1;
+        background: #161b22;
+        border-right: solid #30363d;
+    }
+
+    #main-pane {
+        width: 1fr;
+        padding: 1 1 0 1;
     }
 
     #transcript {
         height: 1fr;
-        border: solid $accent;
+        border: round #30363d;
+        background: #0d1117;
+        padding: 0 1;
     }
 
     #prompt {
         dock: bottom;
+        background: #0d1117;
+        color: #f0f6fc;
+        border: round #238636;
+        margin: 0 1 1 1;
     }
     """
     BINDINGS = [
@@ -52,6 +89,7 @@ class TauTuiApp(App[None]):
         super().__init__()
         self.session = session
         self.state = TuiState()
+        self.state.load_messages(session.messages)
         self.adapter = TuiEventAdapter(self.state)
         self._prompt_worker: Worker[None] | None = None
 
@@ -59,9 +97,11 @@ class TauTuiApp(App[None]):
         """Compose the TUI widgets."""
         yield Header()
         yield Static("Ready", id="status")
-        with Vertical():
-            yield TranscriptView(id="transcript", wrap=True, highlight=True, markup=False)
-        yield Input(placeholder="Ask Tau…", id="prompt")
+        with Horizontal(id="workspace"):
+            yield SessionSidebar(id="sidebar")
+            with Vertical(id="main-pane"):
+                yield TranscriptView(id="transcript", wrap=True, highlight=True, markup=False)
+                yield Input(placeholder="Ask Tau…", id="prompt")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -99,12 +139,12 @@ class TauTuiApp(App[None]):
         try:
             async for event in self.session.prompt(text):
                 self.adapter.apply(event)
-                self.call_from_thread(self._refresh)
+                self._refresh()
         except Exception as exc:  # noqa: BLE001 - surface unexpected worker errors in the TUI
             self.state.error = str(exc)
             self.state.add_item("error", f"Error: {exc}")
             self.state.running = False
-            self.call_from_thread(self._refresh)
+            self._refresh()
 
     def action_cancel(self) -> None:
         """Cancel the active agent turn."""
@@ -116,6 +156,8 @@ class TauTuiApp(App[None]):
         self._refresh()
 
     def _refresh(self) -> None:
+        sidebar = self.query_one("#sidebar", SessionSidebar)
+        sidebar.update_from_session(self.session)
         transcript = self.query_one("#transcript", TranscriptView)
         transcript.update_from_state(self.state)
         status = self.query_one("#status", Static)

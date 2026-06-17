@@ -132,6 +132,21 @@ class CodingSession:
         )
 
     @property
+    def cwd(self) -> Path:
+        """Return the session working directory."""
+        return self._config.cwd
+
+    @property
+    def model(self) -> str:
+        """Return the active model for this session."""
+        return self._harness.config.model
+
+    @property
+    def tools(self) -> tuple[AgentTool, ...]:
+        """Return the tools available to the agent."""
+        return tuple(self._harness.config.tools)
+
+    @property
     def messages(self) -> tuple[AgentMessage, ...]:
         """Return the restored/current transcript."""
         return self._harness.messages

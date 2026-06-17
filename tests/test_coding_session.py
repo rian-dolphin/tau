@@ -44,6 +44,9 @@ async def test_load_empty_session_appends_metadata(tmp_path: Path) -> None:
     )
     assert session.messages == ()
     assert session.state.model == "fake"
+    assert session.cwd == tmp_path
+    assert session.model == "fake"
+    assert [tool.name for tool in session.tools] == ["read", "write", "edit", "bash"]
 
 
 @pytest.mark.anyio
