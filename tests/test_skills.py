@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from tau_coding import TauResourcePaths, build_skill_index, expand_skill_command, load_skills
+from tau_coding import (
+    TauResourcePaths,
+    build_skill_index,
+    expand_skill_command,
+    load_skills,
+    load_skills_with_diagnostics,
+)
 from tau_coding.resources import ResourceError
 
 
@@ -58,6 +64,45 @@ def test_project_agents_skill_overrides_user_agents_skill(tmp_path: Path) -> Non
     assert len(skills) == 1
     assert skills[0].path == cwd / ".agents" / "skills" / "review.md"
     assert skills[0].description == "Project Review"
+
+
+def test_load_skills_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
+    tau_home = tmp_path / "home" / ".tau"
+    agents_home = tmp_path / "home" / ".agents"
+    cwd = tmp_path / "project"
+    (tau_home / "skills").mkdir(parents=True)
+    (tau_home / "skills" / "review.md").write_text("# User Tau Review", encoding="utf-8")
+    (cwd / ".tau" / "skills").mkdir(parents=True)
+    (cwd / ".tau" / "skills" / "review.md").write_text("# Project Tau Review", encoding="utf-8")
+
+    skills, diagnostics = load_skills_with_diagnostics(
+        TauResourcePaths(root=tau_home, agents_root=agents_home, cwd=cwd)
+    )
+
+    assert [skill.name for skill in skills] == ["review"]
+    assert skills[0].path == cwd / ".tau" / "skills" / "review.md"
+    assert len(diagnostics) == 1
+    assert diagnostics[0].kind == "skill"
+    assert diagnostics[0].name == "review"
+    assert "overrides lower-precedence resource" in diagnostics[0].message
+
+
+def test_load_skills_with_diagnostics_ignores_duplicate_within_directory(
+    tmp_path: Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    (skills_dir / "dup").mkdir(parents=True)
+    (skills_dir / "dup" / "SKILL.md").write_text("# Directory skill", encoding="utf-8")
+    (skills_dir / "dup.md").write_text("# File skill", encoding="utf-8")
+
+    skills, diagnostics = load_skills_with_diagnostics(
+        TauResourcePaths(root=tmp_path, agents_root=None)
+    )
+
+    assert [skill.name for skill in skills] == ["dup"]
+    assert skills[0].path == skills_dir / "dup" / "SKILL.md"
+    assert len(diagnostics) == 1
+    assert "Duplicate skill name" in diagnostics[0].message
 
 
 def test_agents_md_is_not_loaded_as_a_skill(tmp_path: Path) -> None:

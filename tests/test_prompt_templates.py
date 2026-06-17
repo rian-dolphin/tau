@@ -5,6 +5,7 @@ import pytest
 from tau_coding import (
     TauResourcePaths,
     load_prompt_templates,
+    load_prompt_templates_with_diagnostics,
     render_prompt_template,
 )
 from tau_coding.prompt_templates import PromptTemplate
@@ -62,6 +63,30 @@ def test_project_prompt_template_overrides_user_template(tmp_path: Path) -> None
     assert len(templates) == 1
     assert templates[0].path == cwd / ".agents" / "prompts" / "review.md"
     assert templates[0].content == "Project review"
+
+
+def test_load_prompt_templates_with_diagnostics_reports_overrides(tmp_path: Path) -> None:
+    tau_home = tmp_path / "home" / ".tau"
+    agents_home = tmp_path / "home" / ".agents"
+    cwd = tmp_path / "project"
+    (tau_home / "prompts").mkdir(parents=True)
+    (tau_home / "prompts" / "review.md").write_text("User Tau review", encoding="utf-8")
+    (cwd / ".tau" / "prompts").mkdir(parents=True)
+    (cwd / ".tau" / "prompts" / "review.md").write_text(
+        "Project Tau review",
+        encoding="utf-8",
+    )
+
+    templates, diagnostics = load_prompt_templates_with_diagnostics(
+        TauResourcePaths(root=tau_home, agents_root=agents_home, cwd=cwd)
+    )
+
+    assert [template.name for template in templates] == ["review"]
+    assert templates[0].path == cwd / ".tau" / "prompts" / "review.md"
+    assert len(diagnostics) == 1
+    assert diagnostics[0].kind == "prompt"
+    assert diagnostics[0].name == "review"
+    assert "overrides lower-precedence resource" in diagnostics[0].message
 
 
 def test_render_prompt_template_replaces_variables() -> None:

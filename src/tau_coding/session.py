@@ -19,10 +19,13 @@ from tau_agent.tools import AgentTool
 from tau_ai import ModelProvider
 from tau_coding.commands import CommandRegistry, CommandResult, create_default_command_registry
 from tau_coding.paths import TauPaths
-from tau_coding.prompt_templates import PromptTemplate, load_prompt_templates
-from tau_coding.resources import ResourceError, TauResourcePaths
+from tau_coding.prompt_templates import (
+    PromptTemplate,
+    load_prompt_templates_with_diagnostics,
+)
+from tau_coding.resources import ResourceDiagnostic, ResourceError, TauResourcePaths
 from tau_coding.session_manager import SessionManager
-from tau_coding.skills import Skill, expand_skill_command, load_skills
+from tau_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
 from tau_coding.system_prompt import (
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -67,6 +70,7 @@ class CodingSession:
         last_parent_id: str | None,
         skills: tuple[Skill, ...] = (),
         prompt_templates: tuple[PromptTemplate, ...] = (),
+        resource_diagnostics: tuple[ResourceDiagnostic, ...] = (),
         command_registry: CommandRegistry | None = None,
     ) -> None:
         self._config = config
@@ -75,6 +79,7 @@ class CodingSession:
         self._last_parent_id = last_parent_id
         self._skills = skills
         self._prompt_templates = prompt_templates
+        self._resource_diagnostics = resource_diagnostics
         self._command_registry = command_registry or create_default_command_registry()
 
     @classmethod
@@ -96,8 +101,13 @@ class CodingSession:
         )
         tools = config.tools if config.tools is not None else create_coding_tools(cwd=config.cwd)
         resource_paths = config.resource_paths or TauResourcePaths(cwd=config.cwd)
-        skills = tuple(load_skills(resource_paths))
-        prompt_templates = tuple(load_prompt_templates(resource_paths))
+        loaded_skills, skill_diagnostics = load_skills_with_diagnostics(resource_paths)
+        loaded_prompt_templates, prompt_diagnostics = load_prompt_templates_with_diagnostics(
+            resource_paths
+        )
+        skills = tuple(loaded_skills)
+        prompt_templates = tuple(loaded_prompt_templates)
+        resource_diagnostics = tuple([*skill_diagnostics, *prompt_diagnostics])
         system = (
             config.system
             if config.system is not None
@@ -128,6 +138,7 @@ class CodingSession:
             last_parent_id=_last_parent_id_from_state(state),
             skills=skills,
             prompt_templates=prompt_templates,
+            resource_diagnostics=resource_diagnostics,
             command_registry=config.command_registry,
         )
 
@@ -170,6 +181,11 @@ class CodingSession:
     def prompt_templates(self) -> tuple[PromptTemplate, ...]:
         """Return loaded prompt templates."""
         return self._prompt_templates
+
+    @property
+    def resource_diagnostics(self) -> tuple[ResourceDiagnostic, ...]:
+        """Return non-fatal resource discovery diagnostics."""
+        return self._resource_diagnostics
 
     @property
     def session_id(self) -> str | None:

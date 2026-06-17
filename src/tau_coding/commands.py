@@ -7,6 +7,7 @@ from typing import Protocol
 
 from tau_agent.tools import AgentTool
 from tau_coding.prompt_templates import PromptTemplate
+from tau_coding.resources import ResourceDiagnostic
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.skills import Skill
 
@@ -28,6 +29,9 @@ class CommandSession(Protocol):
 
     @property
     def prompt_templates(self) -> Sequence[PromptTemplate]: ...
+
+    @property
+    def resource_diagnostics(self) -> Sequence[ResourceDiagnostic]: ...
 
     @property
     def session_id(self) -> str | None: ...
@@ -169,6 +173,14 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
+            name="resources",
+            usage="/resources",
+            description="Show loaded resources and discovery diagnostics.",
+            handler=_resources_command,
+        )
+    )
+    registry.register(
+        SlashCommand(
             name="skill",
             usage="/skill:<name> [request]",
             description="Use a loaded skill in the next prompt.",
@@ -233,6 +245,7 @@ def _status_command(context: CommandContext) -> CommandResult:
         f"Tools: {len(session.tools)}",
         f"Skills: {len(session.skills)}",
         f"Prompt templates: {len(session.prompt_templates)}",
+        f"Resource diagnostics: {len(session.resource_diagnostics)}",
     ]
     if session.session_id is not None:
         lines.append(f"Session: {session.session_id}")
@@ -241,13 +254,34 @@ def _status_command(context: CommandContext) -> CommandResult:
 
 def _skills_command(context: CommandContext) -> CommandResult:
     if not context.session.skills:
-        return CommandResult(handled=True, message="No skills loaded.")
+        lines = ["No skills loaded."]
+        if context.session.resource_diagnostics:
+            lines.append("")
+            lines.extend(_format_diagnostics(context.session.resource_diagnostics, kind="skill"))
+        return CommandResult(handled=True, message="\n".join(lines))
 
     lines = ["Available skills:"]
     for skill in sorted(context.session.skills, key=lambda item: item.name):
         description = skill.description or "No description"
         lines.append(f"- {skill.name}: {description}")
     lines.append("Use a skill with /skill:<name> [request].")
+    if context.session.resource_diagnostics:
+        lines.append("")
+        lines.extend(_format_diagnostics(context.session.resource_diagnostics, kind="skill"))
+    return CommandResult(handled=True, message="\n".join(lines))
+
+
+def _resources_command(context: CommandContext) -> CommandResult:
+    session = context.session
+    lines = [
+        f"Skills: {len(session.skills)}",
+        f"Prompt templates: {len(session.prompt_templates)}",
+    ]
+    if session.resource_diagnostics:
+        lines.append("")
+        lines.extend(_format_diagnostics(session.resource_diagnostics))
+    else:
+        lines.append("Resource diagnostics: none")
     return CommandResult(handled=True, message="\n".join(lines))
 
 
@@ -297,6 +331,17 @@ def _provider_command(context: CommandContext) -> CommandResult:
 def _format_session_record(record: CodingSessionRecord) -> str:
     title = record.title or "Untitled"
     return f"- {record.id}: {title} ({record.model}) {record.cwd}"
+
+
+def _format_diagnostics(
+    diagnostics: Sequence[ResourceDiagnostic], *, kind: str | None = None
+) -> list[str]:
+    filtered = [diagnostic for diagnostic in diagnostics if kind is None or diagnostic.kind == kind]
+    if not filtered:
+        return ["Resource diagnostics: none"]
+    lines = ["Resource diagnostics:"]
+    lines.extend(f"- {diagnostic.format()}" for diagnostic in filtered)
+    return lines
 
 
 def _parse_command(text: str) -> tuple[str, str]:

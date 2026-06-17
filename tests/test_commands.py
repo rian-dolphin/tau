@@ -2,6 +2,7 @@ from pathlib import Path
 
 from tau_coding.commands import CommandRegistry, SlashCommand, create_default_command_registry
 from tau_coding.paths import TauPaths
+from tau_coding.resources import ResourceDiagnostic
 from tau_coding.session_manager import SessionManager
 from tau_coding.skills import Skill
 from tau_coding.tools import create_coding_tools
@@ -21,6 +22,7 @@ class FakeSession:
             ),
         )
         self.prompt_templates = ()
+        self.resource_diagnostics = ()
         self.session_id = "session-1"
         self.session_manager: SessionManager | None = manager
 
@@ -60,6 +62,7 @@ def test_status_includes_session_details(tmp_path: Path) -> None:
     assert f"CWD: {tmp_path}" in result.message
     assert "Tools: 4" in result.message
     assert "Skills: 1" in result.message
+    assert "Resource diagnostics: 0" in result.message
     assert "Session: session-1" in result.message
 
 
@@ -70,6 +73,26 @@ def test_skills_lists_loaded_skills(tmp_path: Path) -> None:
     assert "Available skills:" in result.message
     assert "- review: Review code" in result.message
     assert "/skill:review" not in result.message
+
+
+def test_resources_lists_discovery_diagnostics(tmp_path: Path) -> None:
+    session = FakeSession(tmp_path)
+    session.resource_diagnostics = (
+        ResourceDiagnostic(
+            kind="skill",
+            name="review",
+            path=tmp_path / "review.md",
+            message="overrides lower-precedence resource",
+        ),
+    )
+
+    result = create_default_command_registry().execute(session, "/resources")
+
+    assert result.message is not None
+    assert "Skills: 1" in result.message
+    assert "Prompt templates: 0" in result.message
+    assert "Resource diagnostics:" in result.message
+    assert "warning skill review" in result.message
 
 
 def test_sessions_lists_indexed_sessions(tmp_path: Path) -> None:

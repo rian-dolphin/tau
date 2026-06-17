@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tau_coding.resources import (
+    ResourceDiagnostic,
     ResourceError,
     TauResourcePaths,
     derive_description,
@@ -35,6 +36,33 @@ def load_prompt_templates(paths: TauResourcePaths | None = None) -> list[PromptT
     return sorted(templates_by_name.values(), key=lambda template: template.name)
 
 
+def load_prompt_templates_with_diagnostics(
+    paths: TauResourcePaths | None = None,
+) -> tuple[list[PromptTemplate], list[ResourceDiagnostic]]:
+    """Load prompt templates and return non-fatal discovery diagnostics."""
+    resource_paths = paths or TauResourcePaths()
+    templates_by_name: dict[str, PromptTemplate] = {}
+    diagnostics: list[ResourceDiagnostic] = []
+    for prompts_dir in resource_paths.prompts_dirs:
+        templates, directory_diagnostics = _load_prompt_templates_from_dir_with_diagnostics(
+            prompts_dir
+        )
+        diagnostics.extend(directory_diagnostics)
+        for template in templates:
+            previous = templates_by_name.get(template.name)
+            if previous is not None:
+                diagnostics.append(
+                    ResourceDiagnostic(
+                        kind="prompt",
+                        name=template.name,
+                        path=template.path,
+                        message=f"overrides lower-precedence resource at {previous.path}",
+                    )
+                )
+            templates_by_name[template.name] = template
+    return sorted(templates_by_name.values(), key=lambda template: template.name), diagnostics
+
+
 def render_prompt_template(template: PromptTemplate, variables: Mapping[str, str]) -> str:
     """Render a prompt template using `{{ variable }}` placeholders."""
 
@@ -49,18 +77,48 @@ def render_prompt_template(template: PromptTemplate, variables: Mapping[str, str
 
 
 def _load_prompt_templates_from_dir(prompts_dir: Path) -> list[PromptTemplate]:
+    templates, diagnostics = _load_prompt_templates_from_dir_with_diagnostics(prompts_dir)
+    if diagnostics:
+        first = diagnostics[0]
+        raise ResourceError(first.message)
+    return templates
+
+
+def _load_prompt_templates_from_dir_with_diagnostics(
+    prompts_dir: Path,
+) -> tuple[list[PromptTemplate], list[ResourceDiagnostic]]:
     if not prompts_dir.exists() or not prompts_dir.is_dir():
-        return []
+        return [], []
 
     templates: list[PromptTemplate] = []
+    diagnostics: list[ResourceDiagnostic] = []
     seen: set[str] = set()
     for path in sorted(prompts_dir.glob("*.md"), key=lambda item: item.name):
         name = path.stem
         if name in seen:
-            raise ResourceError(f"Duplicate prompt template name: {name}")
+            diagnostics.append(
+                ResourceDiagnostic(
+                    kind="prompt",
+                    name=name,
+                    path=path,
+                    message=f"Duplicate prompt template name ignored in {prompts_dir}",
+                )
+            )
+            continue
         seen.add(name)
-        templates.append(_load_prompt_template(name, path))
-    return templates
+        try:
+            templates.append(_load_prompt_template(name, path))
+        except (OSError, UnicodeDecodeError) as exc:
+            diagnostics.append(
+                ResourceDiagnostic(
+                    kind="prompt",
+                    name=name,
+                    path=path,
+                    message=f"could not read prompt template: {exc}",
+                    severity="error",
+                )
+            )
+    return templates, diagnostics
 
 
 def _load_prompt_template(name: str, path: Path) -> PromptTemplate:

@@ -304,6 +304,33 @@ async def test_session_loads_and_expands_skills(tmp_path: Path) -> None:
     assert session.handle_command("/skill:testing").handled is False
 
 
+@pytest.mark.anyio
+async def test_session_loads_with_resource_diagnostics_instead_of_failing(
+    tmp_path: Path,
+) -> None:
+    resource_root = tmp_path / "resources"
+    skills_dir = resource_root / "skills"
+    (skills_dir / "dup").mkdir(parents=True)
+    (skills_dir / "dup" / "SKILL.md").write_text("# Directory skill", encoding="utf-8")
+    (skills_dir / "dup.md").write_text("# File skill", encoding="utf-8")
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    config = CodingSessionConfig(
+        provider=FakeProvider([]),
+        model="fake",
+        system="You are Tau.",
+        storage=storage,
+        cwd=tmp_path,
+        resource_paths=TauResourcePaths(root=resource_root, agents_root=None),
+    )
+
+    session = await CodingSession.load(config)
+
+    assert [skill.name for skill in session.skills] == ["dup"]
+    assert len(session.resource_diagnostics) == 1
+    assert "Duplicate skill name" in session.resource_diagnostics[0].message
+    assert "Resource diagnostics: 1" in (session.handle_command("/status").message or "")
+
+
 def test_minimal_commands_are_handled(tmp_path: Path) -> None:
     session = CodingSession(
         _config(tmp_path, FakeProvider([]), JsonlSessionStorage(tmp_path / "session.jsonl")),

@@ -31,6 +31,7 @@ class FakeSession:
         self.tools = tuple(create_coding_tools(cwd=self.cwd))
         self.skills = (Skill(name="review", path=self.cwd / "review.md", content="Review code"),)
         self.prompt_templates = ()
+        self.resource_diagnostics = ()
 
     def handle_command(self, text: str) -> CommandResult:
         if text == "/clear":

@@ -10,6 +10,7 @@ from tau_coding.paths import TauPaths
 from tau_coding.prompt_templates import (
     PromptTemplate,
     load_prompt_templates,
+    load_prompt_templates_with_diagnostics,
     render_prompt_template,
 )
 from tau_coding.rendering import (
@@ -20,7 +21,7 @@ from tau_coding.rendering import (
     TranscriptRenderer,
     create_event_renderer,
 )
-from tau_coding.resources import ResourceError, TauResourcePaths
+from tau_coding.resources import ResourceDiagnostic, ResourceError, TauResourcePaths
 from tau_coding.session import (
     CodingSession,
     CodingSessionConfig,
@@ -28,7 +29,13 @@ from tau_coding.session import (
     jsonl_session_storage,
 )
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
-from tau_coding.skills import Skill, build_skill_index, expand_skill_command, load_skills
+from tau_coding.skills import (
+    Skill,
+    build_skill_index,
+    expand_skill_command,
+    load_skills,
+    load_skills_with_diagnostics,
+)
 from tau_coding.system_prompt import (
     BuildSystemPromptOptions,
     ProjectContextFile,
@@ -68,6 +75,7 @@ __all__ = [
     "PrintOutputMode",
     "ProjectContextFile",
     "PromptTemplate",
+    "ResourceDiagnostic",
     "ResourceError",
     "SessionManager",
     "Skill",
@@ -98,6 +106,8 @@ __all__ = [
     "format_skills_for_prompt",
     "jsonl_session_storage",
     "load_prompt_templates",
+    "load_prompt_templates_with_diagnostics",
     "load_skills",
+    "load_skills_with_diagnostics",
     "render_prompt_template",
 ]

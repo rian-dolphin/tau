@@ -35,5 +35,6 @@ The most important boundary is that `tau_agent` should stay portable. It can def
 - [Phase 13: Tau Home, Paths, and `.agents` Resources](phase-13-paths-agents-resources.md)
 - [Phase 14: Session Manager and Resume](phase-14-session-manager-resume.md)
 - [Phase 15: Slash Command Registry](phase-15-slash-command-registry.md)
+- [Phase 16: Robust Resource Discovery](phase-16-resource-discovery.md)
 
 More pages will be added here as each phase lands.

@@ -8,7 +8,7 @@ import typer
 
 from tau_agent import AgentHarness, AgentHarnessConfig
 from tau_ai import ModelProvider, OpenAICompatibleProvider, openai_compatible_config_from_env
-from tau_coding import __version__, create_coding_tools, load_skills
+from tau_coding import __version__, create_coding_tools, load_skills_with_diagnostics
 from tau_coding.rendering import PrintOutputMode, create_event_renderer
 from tau_coding.resources import TauResourcePaths
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
@@ -137,7 +137,7 @@ async def run_print_mode(
     can fail non-interactive runs while still rendering the error message.
     """
     tools = create_coding_tools(cwd=cwd)
-    skills = load_skills(resource_paths or TauResourcePaths(cwd=cwd))
+    skills, _diagnostics = load_skills_with_diagnostics(resource_paths or TauResourcePaths(cwd=cwd))
     system = build_system_prompt(BuildSystemPromptOptions(cwd=cwd, tools=tools, skills=skills))
     harness = AgentHarness(
         AgentHarnessConfig(

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tau_coding.resources import (
+    ResourceDiagnostic,
     ResourceError,
     TauResourcePaths,
     derive_description,
@@ -37,6 +38,38 @@ def load_skills(paths: TauResourcePaths | None = None) -> list[Skill]:
             skills_by_name[skill.name] = skill
 
     return sorted(skills_by_name.values(), key=lambda skill: skill.name)
+
+
+def load_skills_with_diagnostics(
+    paths: TauResourcePaths | None = None,
+) -> tuple[list[Skill], list[ResourceDiagnostic]]:
+    """Load skills and return non-fatal discovery diagnostics.
+
+    Resource directories are loaded in increasing precedence order. Higher
+    precedence resources replace lower precedence resources with the same name,
+    and that replacement is reported as a diagnostic.
+    """
+    resource_paths = paths or TauResourcePaths()
+    skills_by_name: dict[str, Skill] = {}
+    diagnostics: list[ResourceDiagnostic] = []
+
+    for skills_dir in resource_paths.skills_dirs:
+        skills, directory_diagnostics = _load_skills_from_dir_with_diagnostics(skills_dir)
+        diagnostics.extend(directory_diagnostics)
+        for skill in skills:
+            previous = skills_by_name.get(skill.name)
+            if previous is not None:
+                diagnostics.append(
+                    ResourceDiagnostic(
+                        kind="skill",
+                        name=skill.name,
+                        path=skill.path,
+                        message=f"overrides lower-precedence resource at {previous.path}",
+                    )
+                )
+            skills_by_name[skill.name] = skill
+
+    return sorted(skills_by_name.values(), key=lambda skill: skill.name), diagnostics
 
 
 def expand_skill_command(text: str, skills: Sequence[Skill]) -> str | None:
@@ -76,10 +109,21 @@ def build_skill_index(skills: Sequence[Skill]) -> str:
 
 
 def _load_skills_from_dir(skills_dir: Path) -> list[Skill]:
+    skills, diagnostics = _load_skills_from_dir_with_diagnostics(skills_dir)
+    if diagnostics:
+        first = diagnostics[0]
+        raise ResourceError(first.message)
+    return skills
+
+
+def _load_skills_from_dir_with_diagnostics(
+    skills_dir: Path,
+) -> tuple[list[Skill], list[ResourceDiagnostic]]:
     if not skills_dir.exists() or not skills_dir.is_dir():
-        return []
+        return [], []
 
     skills: list[Skill] = []
+    diagnostics: list[ResourceDiagnostic] = []
     seen: set[str] = set()
     for path in sorted(skills_dir.iterdir(), key=lambda item: item.name):
         skill_path: Path | None = None
@@ -97,10 +141,29 @@ def _load_skills_from_dir(skills_dir: Path) -> list[Skill]:
             continue
 
         if name in seen:
-            raise ResourceError(f"Duplicate skill name: {name}")
+            diagnostics.append(
+                ResourceDiagnostic(
+                    kind="skill",
+                    name=name,
+                    path=skill_path,
+                    message=f"Duplicate skill name ignored in {skills_dir}",
+                )
+            )
+            continue
         seen.add(name)
-        skills.append(_load_skill(name, skill_path))
-    return skills
+        try:
+            skills.append(_load_skill(name, skill_path))
+        except (OSError, UnicodeDecodeError) as exc:
+            diagnostics.append(
+                ResourceDiagnostic(
+                    kind="skill",
+                    name=name,
+                    path=skill_path,
+                    message=f"could not read skill: {exc}",
+                    severity="error",
+                )
+            )
+    return skills, diagnostics
 
 
 def _load_skill(name: str, path: Path) -> Skill:
