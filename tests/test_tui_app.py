@@ -323,6 +323,25 @@ async def test_tui_app_enter_accepts_completion_without_submitting() -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_app_enter_accepts_arrow_selected_completion() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/s"
+        app._completion_state = app._build_completion_state(prompt.value)
+        app._refresh_completions()
+        await pilot.press("down")
+        selected = app._completion_state.selected
+        assert selected is not None
+
+        await pilot.press("enter")
+
+        assert prompt.value == selected.replacement
+        assert app.state.items == []
+
+
+@pytest.mark.anyio
 async def test_tui_app_completes_skill_name() -> None:
     app = TauTuiApp(FakeSession())
 
