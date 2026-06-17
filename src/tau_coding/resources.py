@@ -106,6 +106,23 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return deduped
 
 
+def resource_paths_with_cwd(
+    paths: TauResourcePaths | None,
+    cwd: Path,
+) -> TauResourcePaths:
+    """Return resource paths with a cwd available for project-local discovery."""
+    if paths is None:
+        return TauResourcePaths(cwd=cwd)
+    if paths.cwd is not None:
+        return paths
+    return TauResourcePaths(
+        root=paths.root,
+        cwd=cwd,
+        agents_root=paths.agents_root,
+        paths=paths.paths,
+    )
+
+
 def parse_markdown_resource(text: str) -> tuple[dict[str, str], str]:
     """Parse minimal YAML-like frontmatter from a markdown resource.
 

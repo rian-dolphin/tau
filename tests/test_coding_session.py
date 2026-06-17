@@ -222,6 +222,7 @@ async def test_session_builds_system_prompt_when_system_is_omitted(tmp_path: Pat
     resource_root = tmp_path / "resources"
     skills_dir = resource_root / "skills"
     skills_dir.mkdir(parents=True)
+    (tmp_path / "AGENTS.md").write_text("Follow project rules.", encoding="utf-8")
     (skills_dir / "testing.md").write_text(
         "---\ndescription: Test code\n---\n# Testing",
         encoding="utf-8",
@@ -247,8 +248,11 @@ async def test_session_builds_system_prompt_when_system_is_omitted(tmp_path: Pat
     _events = await _collect_session_events(session.prompt("Hello"))
 
     assert "Available tools:\n- read: Read file contents" in provider.calls[0][1]
+    assert '<project_instructions path="' in provider.calls[0][1]
+    assert "Follow project rules." in provider.calls[0][1]
     assert "<available_skills>" in provider.calls[0][1]
     assert "<name>testing</name>" in provider.calls[0][1]
+    assert [Path(context_file.path).name for context_file in session.context_files] == ["AGENTS.md"]
 
 
 @pytest.mark.anyio

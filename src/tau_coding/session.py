@@ -18,6 +18,7 @@ from tau_agent.session import (
 from tau_agent.tools import AgentTool
 from tau_ai import ModelProvider, OpenAICompatibleProvider
 from tau_coding.commands import CommandRegistry, CommandResult, create_default_command_registry
+from tau_coding.context import discover_project_context_with_diagnostics
 from tau_coding.paths import TauPaths
 from tau_coding.prompt_templates import (
     PromptTemplate,
@@ -28,7 +29,12 @@ from tau_coding.provider_config import (
     ProviderSettings,
     openai_compatible_config_from_provider,
 )
-from tau_coding.resources import ResourceDiagnostic, ResourceError, TauResourcePaths
+from tau_coding.resources import (
+    ResourceDiagnostic,
+    ResourceError,
+    TauResourcePaths,
+    resource_paths_with_cwd,
+)
 from tau_coding.session_manager import SessionManager
 from tau_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
 from tau_coding.system_prompt import (
@@ -77,6 +83,7 @@ class CodingSession:
         last_parent_id: str | None,
         skills: tuple[Skill, ...] = (),
         prompt_templates: tuple[PromptTemplate, ...] = (),
+        context_files: tuple[ProjectContextFile, ...] = (),
         resource_diagnostics: tuple[ResourceDiagnostic, ...] = (),
         command_registry: CommandRegistry | None = None,
     ) -> None:
@@ -86,6 +93,7 @@ class CodingSession:
         self._last_parent_id = last_parent_id
         self._skills = skills
         self._prompt_templates = prompt_templates
+        self._context_files = context_files
         self._resource_diagnostics = resource_diagnostics
         self._command_registry = command_registry or create_default_command_registry()
         self._provider_name = config.provider_name
@@ -110,14 +118,20 @@ class CodingSession:
             else linear_state
         )
         tools = config.tools if config.tools is not None else create_coding_tools(cwd=config.cwd)
-        resource_paths = config.resource_paths or TauResourcePaths(cwd=config.cwd)
+        resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
         loaded_skills, skill_diagnostics = load_skills_with_diagnostics(resource_paths)
         loaded_prompt_templates, prompt_diagnostics = load_prompt_templates_with_diagnostics(
             resource_paths
         )
+        discovered_context, context_diagnostics = discover_project_context_with_diagnostics(
+            resource_paths
+        )
         skills = tuple(loaded_skills)
         prompt_templates = tuple(loaded_prompt_templates)
-        resource_diagnostics = tuple([*skill_diagnostics, *prompt_diagnostics])
+        context_files = _merge_context_files(config.context_files, discovered_context)
+        resource_diagnostics = tuple(
+            [*skill_diagnostics, *prompt_diagnostics, *context_diagnostics]
+        )
         system = (
             config.system
             if config.system is not None
@@ -128,7 +142,7 @@ class CodingSession:
                     skills=skills,
                     custom_prompt=config.custom_system_prompt,
                     append_system_prompt=config.append_system_prompt,
-                    context_files=config.context_files,
+                    context_files=context_files,
                 )
             )
         )
@@ -148,6 +162,7 @@ class CodingSession:
             last_parent_id=_last_parent_id_from_state(state),
             skills=skills,
             prompt_templates=prompt_templates,
+            context_files=context_files,
             resource_diagnostics=resource_diagnostics,
             command_registry=config.command_registry,
         )
@@ -211,6 +226,11 @@ class CodingSession:
     def prompt_templates(self) -> tuple[PromptTemplate, ...]:
         """Return loaded prompt templates."""
         return self._prompt_templates
+
+    @property
+    def context_files(self) -> tuple[ProjectContextFile, ...]:
+        """Return active project context files."""
+        return self._context_files
 
     @property
     def command_registry(self) -> CommandRegistry:
@@ -325,6 +345,20 @@ def _last_parent_id_from_state(state: SessionState) -> str | None:
     if state.entries:
         return state.entries[-1].id
     return None
+
+
+def _merge_context_files(
+    explicit: tuple[ProjectContextFile, ...],
+    discovered: tuple[ProjectContextFile, ...],
+) -> tuple[ProjectContextFile, ...]:
+    merged: list[ProjectContextFile] = []
+    seen: set[str] = set()
+    for context_file in (*explicit, *discovered):
+        if context_file.path in seen:
+            continue
+        seen.add(context_file.path)
+        merged.append(context_file)
+    return tuple(merged)
 
 
 def default_session_path(cwd: Path) -> Path:

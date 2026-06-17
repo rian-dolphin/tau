@@ -10,6 +10,7 @@ from tau_coding.prompt_templates import PromptTemplate
 from tau_coding.resources import ResourceDiagnostic
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.skills import Skill
+from tau_coding.system_prompt import ProjectContextFile
 
 
 class CommandSession(Protocol):
@@ -38,6 +39,9 @@ class CommandSession(Protocol):
 
     @property
     def prompt_templates(self) -> Sequence[PromptTemplate]: ...
+
+    @property
+    def context_files(self) -> Sequence[ProjectContextFile]: ...
 
     @property
     def resource_diagnostics(self) -> Sequence[ResourceDiagnostic]: ...
@@ -194,6 +198,14 @@ def create_default_command_registry() -> CommandRegistry:
     )
     registry.register(
         SlashCommand(
+            name="context",
+            usage="/context",
+            description="Show active project context files.",
+            handler=_context_command,
+        )
+    )
+    registry.register(
+        SlashCommand(
             name="skill",
             usage="/skill:<name> [request]",
             description="Use a loaded skill in the next prompt.",
@@ -258,6 +270,7 @@ def _status_command(context: CommandContext) -> CommandResult:
         f"Tools: {len(session.tools)}",
         f"Skills: {len(session.skills)}",
         f"Prompt templates: {len(session.prompt_templates)}",
+        f"Context files: {len(session.context_files)}",
         f"Resource diagnostics: {len(session.resource_diagnostics)}",
     ]
     if session.session_id is not None:
@@ -289,12 +302,30 @@ def _resources_command(context: CommandContext) -> CommandResult:
     lines = [
         f"Skills: {len(session.skills)}",
         f"Prompt templates: {len(session.prompt_templates)}",
+        f"Context files: {len(session.context_files)}",
     ]
     if session.resource_diagnostics:
         lines.append("")
         lines.extend(_format_diagnostics(session.resource_diagnostics))
     else:
         lines.append("Resource diagnostics: none")
+    return CommandResult(handled=True, message="\n".join(lines))
+
+
+def _context_command(context: CommandContext) -> CommandResult:
+    session = context.session
+    if not session.context_files:
+        lines = ["No project context files loaded."]
+        if session.resource_diagnostics:
+            lines.append("")
+            lines.extend(_format_diagnostics(session.resource_diagnostics, kind="context"))
+        return CommandResult(handled=True, message="\n".join(lines))
+
+    lines = ["Active project context files:"]
+    lines.extend(f"- {context_file.path}" for context_file in session.context_files)
+    if session.resource_diagnostics:
+        lines.append("")
+        lines.extend(_format_diagnostics(session.resource_diagnostics, kind="context"))
     return CommandResult(handled=True, message="\n".join(lines))
 
 

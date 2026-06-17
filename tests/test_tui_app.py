@@ -17,6 +17,7 @@ from tau_coding.commands import CommandResult
 from tau_coding.provider_config import OpenAICompatibleProviderConfig, ProviderSettings
 from tau_coding.session_manager import CodingSessionRecord
 from tau_coding.skills import Skill
+from tau_coding.system_prompt import ProjectContextFile
 from tau_coding.tools import create_coding_tools
 from tau_coding.tui import app as tui_app
 from tau_coding.tui.app import TauTuiApp
@@ -36,6 +37,9 @@ class FakeSession:
         self.tools = tuple(create_coding_tools(cwd=self.cwd))
         self.skills = (Skill(name="review", path=self.cwd / "review.md", content="Review code"),)
         self.prompt_templates = ()
+        self.context_files = (
+            ProjectContextFile(path=str(self.cwd / "AGENTS.md"), content="Follow rules."),
+        )
         self.resource_diagnostics = ()
 
     def handle_command(self, text: str) -> CommandResult:

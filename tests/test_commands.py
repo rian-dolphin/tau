@@ -5,6 +5,7 @@ from tau_coding.paths import TauPaths
 from tau_coding.resources import ResourceDiagnostic
 from tau_coding.session_manager import SessionManager
 from tau_coding.skills import Skill
+from tau_coding.system_prompt import ProjectContextFile
 from tau_coding.tools import create_coding_tools
 
 
@@ -25,6 +26,9 @@ class FakeSession:
             ),
         )
         self.prompt_templates = ()
+        self.context_files = (
+            ProjectContextFile(path=str(tmp_path / "AGENTS.md"), content="Follow instructions."),
+        )
         self.resource_diagnostics = ()
         self.session_id = "session-1"
         self.session_manager: SessionManager | None = manager
@@ -73,6 +77,7 @@ def test_status_includes_session_details(tmp_path: Path) -> None:
     assert f"CWD: {tmp_path}" in result.message
     assert "Tools: 4" in result.message
     assert "Skills: 1" in result.message
+    assert "Context files: 1" in result.message
     assert "Resource diagnostics: 0" in result.message
     assert "Session: session-1" in result.message
 
@@ -157,8 +162,17 @@ def test_resources_lists_discovery_diagnostics(tmp_path: Path) -> None:
     assert result.message is not None
     assert "Skills: 1" in result.message
     assert "Prompt templates: 0" in result.message
+    assert "Context files: 1" in result.message
     assert "Resource diagnostics:" in result.message
     assert "warning skill review" in result.message
+
+
+def test_context_lists_active_context_files(tmp_path: Path) -> None:
+    result = create_default_command_registry().execute(FakeSession(tmp_path), "/context")
+
+    assert result.message is not None
+    assert "Active project context files:" in result.message
+    assert f"- {tmp_path / 'AGENTS.md'}" in result.message
 
 
 def test_sessions_lists_indexed_sessions(tmp_path: Path) -> None:

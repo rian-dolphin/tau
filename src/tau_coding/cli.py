@@ -11,6 +11,7 @@ from tau_agent import AgentHarness, AgentHarnessConfig
 from tau_ai import ModelProvider, OpenAICompatibleProvider
 from tau_ai.env import DEFAULT_OPENAI_COMPATIBLE_BASE_URL
 from tau_coding import __version__, create_coding_tools, load_skills_with_diagnostics
+from tau_coding.context import discover_project_context
 from tau_coding.provider_config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER_NAME,
@@ -23,7 +24,7 @@ from tau_coding.provider_config import (
     upsert_openai_compatible_provider,
 )
 from tau_coding.rendering import PrintOutputMode, create_event_renderer
-from tau_coding.resources import TauResourcePaths
+from tau_coding.resources import TauResourcePaths, resource_paths_with_cwd
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.system_prompt import BuildSystemPromptOptions, build_system_prompt
 from tau_coding.tui import run_tui_app
@@ -235,8 +236,17 @@ async def run_print_mode(
     can fail non-interactive runs while still rendering the error message.
     """
     tools = create_coding_tools(cwd=cwd)
-    skills, _diagnostics = load_skills_with_diagnostics(resource_paths or TauResourcePaths(cwd=cwd))
-    system = build_system_prompt(BuildSystemPromptOptions(cwd=cwd, tools=tools, skills=skills))
+    active_resource_paths = resource_paths_with_cwd(resource_paths, cwd)
+    skills, _diagnostics = load_skills_with_diagnostics(active_resource_paths)
+    context_files = discover_project_context(active_resource_paths)
+    system = build_system_prompt(
+        BuildSystemPromptOptions(
+            cwd=cwd,
+            tools=tools,
+            skills=skills,
+            context_files=context_files,
+        )
+    )
     harness = AgentHarness(
         AgentHarnessConfig(
             provider=provider,

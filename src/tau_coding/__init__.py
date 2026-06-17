@@ -6,6 +6,10 @@ from tau_coding.commands import (
     SlashCommand,
     create_default_command_registry,
 )
+from tau_coding.context import (
+    discover_project_context,
+    discover_project_context_with_diagnostics,
+)
 from tau_coding.paths import TauPaths
 from tau_coding.prompt_templates import (
     PromptTemplate,
@@ -121,6 +125,8 @@ __all__ = [
     "create_write_tool_definition",
     "default_session_path",
     "default_openai_provider_config",
+    "discover_project_context",
+    "discover_project_context_with_diagnostics",
     "expand_skill_command",
     "format_available_tools",
     "format_guidelines",
