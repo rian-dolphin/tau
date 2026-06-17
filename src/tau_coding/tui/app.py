@@ -52,6 +52,7 @@ class TauTuiApp(App[None]):
         super().__init__()
         self.session = session
         self.state = TuiState()
+        self.state.load_messages(session.messages)
         self.adapter = TuiEventAdapter(self.state)
         self._prompt_worker: Worker[None] | None = None
 
@@ -99,12 +100,12 @@ class TauTuiApp(App[None]):
         try:
             async for event in self.session.prompt(text):
                 self.adapter.apply(event)
-                self.call_from_thread(self._refresh)
+                self._refresh()
         except Exception as exc:  # noqa: BLE001 - surface unexpected worker errors in the TUI
             self.state.error = str(exc)
             self.state.add_item("error", f"Error: {exc}")
             self.state.running = False
-            self.call_from_thread(self._refresh)
+            self._refresh()
 
     def action_cancel(self) -> None:
         """Cancel the active agent turn."""
