@@ -11,7 +11,10 @@ from tau_coding.tools import create_coding_tools
 class FakeSession:
     def __init__(self, tmp_path: Path, manager: SessionManager | None = None) -> None:
         self.cwd = tmp_path
+        self.provider_name = "openai"
         self.model = "fake-model"
+        self.available_models = ("fake-model", "other-model")
+        self.available_providers = ("openai", "local")
         self.tools = tuple(create_coding_tools(cwd=tmp_path))
         self.skills = (
             Skill(
@@ -25,6 +28,9 @@ class FakeSession:
         self.resource_diagnostics = ()
         self.session_id = "session-1"
         self.session_manager: SessionManager | None = manager
+
+    def set_model(self, model: str) -> None:
+        self.model = model
 
 
 def test_registry_ignores_ordinary_prompts_and_skill_expansion(tmp_path: Path) -> None:
@@ -64,6 +70,38 @@ def test_status_includes_session_details(tmp_path: Path) -> None:
     assert "Skills: 1" in result.message
     assert "Resource diagnostics: 0" in result.message
     assert "Session: session-1" in result.message
+
+
+def test_model_command_lists_and_switches_models(tmp_path: Path) -> None:
+    session = FakeSession(tmp_path)
+    registry = create_default_command_registry()
+
+    list_result = registry.execute(session, "/model")
+    switch_result = registry.execute(session, "/model other-model")
+
+    assert list_result.message is not None
+    assert "Current model: fake-model" in list_result.message
+    assert "Available models: fake-model, other-model" in list_result.message
+    assert switch_result.message == "Current model: other-model"
+    assert session.model == "other-model"
+
+
+def test_model_command_rejects_unknown_model(tmp_path: Path) -> None:
+    session = FakeSession(tmp_path)
+
+    result = create_default_command_registry().execute(session, "/model missing")
+
+    assert result.message is not None
+    assert "Unknown model for provider openai: missing" in result.message
+    assert session.model == "fake-model"
+
+
+def test_provider_command_lists_configured_providers(tmp_path: Path) -> None:
+    result = create_default_command_registry().execute(FakeSession(tmp_path), "/provider")
+
+    assert result.message is not None
+    assert "Current provider: openai" in result.message
+    assert "Available providers: openai, local" in result.message
 
 
 def test_skills_lists_loaded_skills(tmp_path: Path) -> None:

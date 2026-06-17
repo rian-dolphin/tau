@@ -22,6 +22,15 @@ class CommandSession(Protocol):
     def model(self) -> str: ...
 
     @property
+    def provider_name(self) -> str: ...
+
+    @property
+    def available_models(self) -> Sequence[str]: ...
+
+    @property
+    def available_providers(self) -> Sequence[str]: ...
+
+    @property
     def tools(self) -> Sequence[AgentTool]: ...
 
     @property
@@ -38,6 +47,8 @@ class CommandSession(Protocol):
 
     @property
     def session_manager(self) -> SessionManager | None: ...
+
+    def set_model(self, model: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -318,14 +329,36 @@ def _resume_command(context: CommandContext) -> CommandResult:
 
 
 def _model_command(context: CommandContext) -> CommandResult:
+    if context.args:
+        model = context.args.strip()
+        available_models = set(context.session.available_models)
+        if available_models and model not in available_models:
+            models = ", ".join(sorted(available_models))
+            return CommandResult(
+                handled=True,
+                message=f"Unknown model for provider {context.session.provider_name}: {model}\n"
+                f"Available models: {models}",
+            )
+        context.session.set_model(model)
+        return CommandResult(handled=True, message=f"Current model: {model}")
+
+    models = ", ".join(context.session.available_models) or "none"
     return CommandResult(
         handled=True,
-        message=f"Current model: {context.session.model}\nModel switching is not implemented yet.",
+        message=f"Current model: {context.session.model}\nAvailable models: {models}",
     )
 
 
 def _provider_command(context: CommandContext) -> CommandResult:
-    return CommandResult(handled=True, message="Provider switching is not implemented yet.")
+    providers = ", ".join(context.session.available_providers) or "none"
+    return CommandResult(
+        handled=True,
+        message=(
+            f"Current provider: {context.session.provider_name}\n"
+            f"Available providers: {providers}\n"
+            "Switch providers by starting Tau with --provider <name>."
+        ),
+    )
 
 
 def _format_session_record(record: CodingSessionRecord) -> str:

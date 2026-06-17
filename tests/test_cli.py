@@ -29,12 +29,16 @@ def test_version_command() -> None:
 def test_cli_without_prompt_invokes_tui_runner(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    calls: list[tuple[str, Path, str | None, bool]] = []
+    calls: list[tuple[str | None, Path, str | None, bool, str | None]] = []
 
     async def fake_run_openai_tui(
-        model: str, cwd: Path, session_id: str | None, new_session: bool
+        model: str | None,
+        cwd: Path,
+        session_id: str | None,
+        new_session: bool,
+        provider_name: str | None,
     ) -> None:
-        calls.append((model, cwd, session_id, new_session))
+        calls.append((model, cwd, session_id, new_session, provider_name))
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(cli, "run_openai_tui", fake_run_openai_tui)
@@ -42,7 +46,7 @@ def test_cli_without_prompt_invokes_tui_runner(
     result = CliRunner().invoke(app, [])
 
     assert result.exit_code == 0
-    assert calls == [("gpt-4.1-mini", tmp_path, None, False)]
+    assert calls == [(None, tmp_path, None, False, None)]
 
 
 @pytest.mark.anyio
@@ -160,7 +164,11 @@ async def test_run_print_mode_can_emit_live_transcript(
 
 def test_cli_exits_nonzero_when_print_mode_fails(monkeypatch: pytest.MonkeyPatch) -> None:
     async def fake_run_openai_print_mode(
-        prompt: str, model: str, cwd: Path, output: PrintOutputMode
+        prompt: str,
+        model: str | None,
+        cwd: Path,
+        output: PrintOutputMode,
+        provider_name: str | None,
     ) -> bool:
         return False
 
@@ -174,12 +182,16 @@ def test_cli_exits_nonzero_when_print_mode_fails(monkeypatch: pytest.MonkeyPatch
 def test_default_tui_invokes_tui_runner_with_flags(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    calls: list[tuple[str, Path, str | None, bool]] = []
+    calls: list[tuple[str | None, Path, str | None, bool, str | None]] = []
 
     async def fake_run_openai_tui(
-        model: str, cwd: Path, session_id: str | None, new_session: bool
+        model: str | None,
+        cwd: Path,
+        session_id: str | None,
+        new_session: bool,
+        provider_name: str | None,
     ) -> None:
-        calls.append((model, cwd, session_id, new_session))
+        calls.append((model, cwd, session_id, new_session, provider_name))
 
     monkeypatch.setattr(cli, "run_openai_tui", fake_run_openai_tui)
 
@@ -190,20 +202,26 @@ def test_default_tui_invokes_tui_runner_with_flags(
             str(tmp_path),
             "--model",
             "fake",
+            "--provider",
+            "local",
             "--resume",
             "session-1",
         ],
     )
 
     assert result.exit_code == 0
-    assert calls == [("fake", tmp_path, "session-1", False)]
+    assert calls == [("fake", tmp_path, "session-1", False, "local")]
 
 
 def test_default_tui_rejects_resume_with_new_session(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     async def fake_run_openai_tui(
-        model: str, cwd: Path, session_id: str | None, new_session: bool
+        model: str | None,
+        cwd: Path,
+        session_id: str | None,
+        new_session: bool,
+        provider_name: str | None,
     ) -> None:
         raise RuntimeError("--resume and --new-session cannot be used together")
 

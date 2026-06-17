@@ -35,6 +35,9 @@ class SessionSummarySource(Protocol):
     def model(self) -> str: ...
 
     @property
+    def provider_name(self) -> str: ...
+
+    @property
     def tools(self) -> Sequence[AgentTool]: ...
 
     @property
@@ -74,6 +77,7 @@ def render_session_sidebar(session: SessionSummarySource) -> RenderableType:
     metadata = Table.grid(padding=(0, 1))
     metadata.add_column(style="bright_black", no_wrap=True)
     metadata.add_column(style="white")
+    metadata.add_row("provider", session.provider_name)
     metadata.add_row("model", session.model)
     metadata.add_row("cwd", _short_path(session.cwd))
     metadata.add_row("tools", str(len(session.tools)))

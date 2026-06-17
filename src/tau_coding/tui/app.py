@@ -10,8 +10,13 @@ from textual.events import Key
 from textual.widgets import Footer, Header, Input, Static
 from textual.worker import Worker
 
-from tau_ai import OpenAICompatibleProvider, openai_compatible_config_from_env
+from tau_ai import OpenAICompatibleProvider
 from tau_coding.commands import CommandRegistry, create_default_command_registry
+from tau_coding.provider_config import (
+    load_provider_settings,
+    openai_compatible_config_from_provider,
+    resolve_provider_selection,
+)
 from tau_coding.session import CodingSession, CodingSessionConfig, jsonl_session_storage
 from tau_coding.session_manager import SessionManager
 from tau_coding.tui.adapter import TuiEventAdapter
@@ -300,17 +305,24 @@ def _session_command_registry(session: CodingSession) -> CommandRegistry:
 
 async def run_tui_app(
     *,
-    model: str,
+    model: str | None,
     cwd: Path,
     session_id: str | None = None,
     new_session: bool = False,
+    provider_name: str | None = None,
     session_manager: SessionManager | None = None,
 ) -> None:
     """Create the default provider/session and run the Textual app."""
     if new_session and session_id is not None:
         raise RuntimeError("--resume and --new-session cannot be used together")
 
-    provider = OpenAICompatibleProvider(openai_compatible_config_from_env())
+    provider_settings = load_provider_settings()
+    selection = resolve_provider_selection(
+        provider_settings,
+        provider_name=provider_name,
+        model=model,
+    )
+    provider = OpenAICompatibleProvider(openai_compatible_config_from_provider(selection.provider))
     manager = session_manager or SessionManager()
     try:
         if session_id is not None:
@@ -319,16 +331,18 @@ async def run_tui_app(
                 raise RuntimeError(f"Unknown session: {session_id}")
             record = existing_record
         else:
-            record = manager.create_session(cwd=cwd, model=model)
+            record = manager.create_session(cwd=cwd, model=selection.model)
 
         session = await CodingSession.load(
             CodingSessionConfig(
                 provider=provider,
-                model=record.model or model,
+                model=record.model or selection.model,
                 cwd=record.cwd,
                 storage=jsonl_session_storage(record.path),
                 session_id=record.id,
                 session_manager=manager,
+                provider_name=selection.provider.name,
+                provider_settings=provider_settings,
             )
         )
         app = TauTuiApp(session)

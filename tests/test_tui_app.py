@@ -14,6 +14,7 @@ from tau_agent import (
     UserMessage,
 )
 from tau_coding.commands import CommandResult
+from tau_coding.provider_config import OpenAICompatibleProviderConfig, ProviderSettings
 from tau_coding.session_manager import CodingSessionRecord
 from tau_coding.skills import Skill
 from tau_coding.tools import create_coding_tools
@@ -28,7 +29,10 @@ class FakeSession:
         self.messages = tuple(messages)
         self.events = tuple(events)
         self.cwd = Path("/workspace/project")
+        self.provider_name = "openai"
         self.model = "fake-model"
+        self.available_models = ("fake-model",)
+        self.available_providers = ("openai",)
         self.tools = tuple(create_coding_tools(cwd=self.cwd))
         self.skills = (Skill(name="review", path=self.cwd / "review.md", content="Review code"),)
         self.prompt_templates = ()
@@ -38,6 +42,9 @@ class FakeSession:
         if text == "/clear":
             return CommandResult(handled=True, clear_requested=True, message="Transcript cleared.")
         return CommandResult(handled=False)
+
+    def set_model(self, model: str) -> None:
+        self.model = model
 
     async def prompt(self, text: str) -> AsyncIterator[AgentEvent]:
         for event in self.events:
@@ -235,6 +242,7 @@ async def test_run_tui_app_creates_new_session_by_default(
     class FakeCodingSession:
         @classmethod
         async def load(cls, config: object) -> str:
+            assert config.provider_name == "local"  # type: ignore[attr-defined]
             calls.append("load")
             return "session"
 
@@ -245,14 +253,36 @@ async def test_run_tui_app_creates_new_session_by_default(
         async def run_async(self) -> None:
             calls.append("run")
 
-    monkeypatch.setattr(tui_app, "openai_compatible_config_from_env", lambda: object())
+    settings = ProviderSettings(
+        default_provider="local",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="local",
+                base_url="http://localhost:11434/v1",
+                api_key_env="LOCAL_API_KEY",
+                models=("local-model",),
+                default_model="local-model",
+            ),
+        ),
+    )
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(
+        tui_app,
+        "openai_compatible_config_from_provider",
+        lambda provider: object(),
+    )
     monkeypatch.setattr(tui_app, "OpenAICompatibleProvider", lambda config: FakeProvider())
     monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
     monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
 
-    await tui_app.run_tui_app(model="fake-model", cwd=tmp_path, session_manager=FakeManager())
+    await tui_app.run_tui_app(
+        model=None,
+        cwd=tmp_path,
+        provider_name="local",
+        session_manager=FakeManager(),
+    )
 
-    assert calls == [f"create:{tmp_path}:fake-model", "load", "run", "provider_closed"]
+    assert calls == [f"create:{tmp_path}:local-model", "load", "run", "provider_closed"]
 
 
 @pytest.mark.anyio
@@ -295,7 +325,13 @@ async def test_run_tui_app_resumes_explicit_session(
         async def run_async(self) -> None:
             calls.append("run")
 
-    monkeypatch.setattr(tui_app, "openai_compatible_config_from_env", lambda: object())
+    settings = ProviderSettings()
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(
+        tui_app,
+        "openai_compatible_config_from_provider",
+        lambda provider: object(),
+    )
     monkeypatch.setattr(tui_app, "OpenAICompatibleProvider", lambda config: FakeProvider())
     monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
     monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)

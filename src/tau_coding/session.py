@@ -23,6 +23,7 @@ from tau_coding.prompt_templates import (
     PromptTemplate,
     load_prompt_templates_with_diagnostics,
 )
+from tau_coding.provider_config import ProviderSettings
 from tau_coding.resources import ResourceDiagnostic, ResourceError, TauResourcePaths
 from tau_coding.session_manager import SessionManager
 from tau_coding.skills import Skill, expand_skill_command, load_skills_with_diagnostics
@@ -51,6 +52,8 @@ class CodingSessionConfig:
     session_id: str | None = None
     session_manager: SessionManager | None = None
     command_registry: CommandRegistry | None = None
+    provider_name: str = "openai"
+    provider_settings: ProviderSettings | None = None
 
 
 class CodingSession:
@@ -153,6 +156,26 @@ class CodingSession:
         return self._harness.config.model
 
     @property
+    def provider_name(self) -> str:
+        """Return the active provider name."""
+        return self._config.provider_name
+
+    @property
+    def available_providers(self) -> tuple[str, ...]:
+        """Return configured provider names."""
+        if self._config.provider_settings is None:
+            return (self._config.provider_name,)
+        return tuple(provider.name for provider in self._config.provider_settings.providers)
+
+    @property
+    def available_models(self) -> tuple[str, ...]:
+        """Return configured model names for the active provider."""
+        if self._config.provider_settings is None:
+            return (self.model,)
+        provider = self._config.provider_settings.get_provider(self._config.provider_name)
+        return provider.models
+
+    @property
     def tools(self) -> tuple[AgentTool, ...]:
         """Return the tools available to the agent."""
         return tuple(self._harness.config.tools)
@@ -205,6 +228,12 @@ class CodingSession:
     def cancel(self) -> None:
         """Cancel the currently running agent turn, if any."""
         self._harness.cancel()
+
+    def set_model(self, model: str) -> None:
+        """Switch the active model for future turns in this process."""
+        self._harness.config.model = model
+        if self._config.session_id is not None and self._config.session_manager is not None:
+            self._config.session_manager.touch_session(self._config.session_id, model=model)
 
     def handle_command(self, text: str) -> CommandResult:
         """Handle minimal coding-session slash commands.

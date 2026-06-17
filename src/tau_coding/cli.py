@@ -7,15 +7,18 @@ import anyio
 import typer
 
 from tau_agent import AgentHarness, AgentHarnessConfig
-from tau_ai import ModelProvider, OpenAICompatibleProvider, openai_compatible_config_from_env
+from tau_ai import ModelProvider, OpenAICompatibleProvider
 from tau_coding import __version__, create_coding_tools, load_skills_with_diagnostics
+from tau_coding.provider_config import (
+    load_provider_settings,
+    openai_compatible_config_from_provider,
+    resolve_provider_selection,
+)
 from tau_coding.rendering import PrintOutputMode, create_event_renderer
 from tau_coding.resources import TauResourcePaths
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.system_prompt import BuildSystemPromptOptions, build_system_prompt
 from tau_coding.tui import run_tui_app
-
-DEFAULT_MODEL = "gpt-4.1-mini"
 
 app = typer.Typer(
     name="tau",
@@ -35,10 +38,14 @@ def main(
         str | None,
         typer.Option("--prompt", "-p", help="Prompt to run in non-interactive print mode."),
     ] = None,
+    provider: Annotated[
+        str | None,
+        typer.Option("--provider", help="Configured provider name to use."),
+    ] = None,
     model: Annotated[
-        str,
+        str | None,
         typer.Option("--model", "-m", help="Model name to request from the provider."),
-    ] = DEFAULT_MODEL,
+    ] = None,
     cwd: Annotated[
         Path | None,
         typer.Option("--cwd", help="Working directory for built-in coding tools."),
@@ -74,7 +81,7 @@ def main(
 
     if prompt_option is None and prompt_arg is None:
         try:
-            anyio.run(run_openai_tui, model, cwd or Path.cwd(), resume, new_session)
+            anyio.run(run_openai_tui, model, cwd or Path.cwd(), resume, new_session, provider)
         except RuntimeError as exc:
             raise typer.BadParameter(str(exc)) from exc
         raise typer.Exit()
@@ -84,7 +91,7 @@ def main(
         raise AssertionError("prompt should be set outside TUI mode")
 
     try:
-        ok = anyio.run(run_openai_print_mode, prompt, model, cwd or Path.cwd(), output)
+        ok = anyio.run(run_openai_print_mode, prompt, model, cwd or Path.cwd(), output, provider)
     except RuntimeError as exc:
         raise typer.BadParameter(str(exc)) from exc
     if not ok:
@@ -92,10 +99,20 @@ def main(
 
 
 async def run_openai_tui(
-    model: str, cwd: Path, session_id: str | None = None, new_session: bool = False
+    model: str | None,
+    cwd: Path,
+    session_id: str | None = None,
+    new_session: bool = False,
+    provider_name: str | None = None,
 ) -> None:
     """Run the Textual TUI with the default OpenAI-compatible provider."""
-    await run_tui_app(model=model, cwd=cwd, session_id=session_id, new_session=new_session)
+    await run_tui_app(
+        model=model,
+        cwd=cwd,
+        session_id=session_id,
+        new_session=new_session,
+        provider_name=provider_name,
+    )
 
 
 def render_session_list(records: list[CodingSessionRecord]) -> None:
@@ -110,13 +127,19 @@ def render_session_list(records: list[CodingSessionRecord]) -> None:
 
 
 async def run_openai_print_mode(
-    prompt: str, model: str, cwd: Path, output: PrintOutputMode = PrintOutputMode.text
+    prompt: str,
+    model: str | None,
+    cwd: Path,
+    output: PrintOutputMode = PrintOutputMode.text,
+    provider_name: str | None = None,
 ) -> bool:
     """Run print mode with the OpenAI-compatible provider configured from the environment."""
-    provider = OpenAICompatibleProvider(openai_compatible_config_from_env())
+    settings = load_provider_settings()
+    selection = resolve_provider_selection(settings, provider_name=provider_name, model=model)
+    provider = OpenAICompatibleProvider(openai_compatible_config_from_provider(selection.provider))
     try:
         return await run_print_mode(
-            prompt=prompt, model=model, cwd=cwd, provider=provider, output=output
+            prompt=prompt, model=selection.model, cwd=cwd, provider=provider, output=output
         )
     finally:
         await provider.aclose()
