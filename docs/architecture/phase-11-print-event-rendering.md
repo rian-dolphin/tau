@@ -71,8 +71,12 @@ This gives scripts and future integrations a stable event stream without dependi
 Transcript mode preserves Tau's earlier print-mode behavior:
 
 - assistant deltas stream to stdout
-- tool starts and tool results render to stderr
+- tool starts, progress updates, and tool results render to stderr
+- successful and failed tool result content renders to stderr
 - errors render to stderr
+
+The transcript renderer uses Rich for human-oriented stderr output while keeping
+the default `text` mode script-friendly.
 
 This is useful while Tau does not yet have a full interactive TUI.
 
@@ -115,7 +119,6 @@ The tests verify:
 
 This phase does not add:
 
-- Rich rendering
 - Textual UI
 - keyboard input
 - session picker

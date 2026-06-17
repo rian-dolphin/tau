@@ -12,6 +12,7 @@ from tau_agent import (
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
 )
 from tau_coding.rendering import FinalTextRenderer, JsonEventRenderer, TranscriptRenderer
 
@@ -29,6 +30,7 @@ def test_transcript_renderer_streams_text_and_tool_events(
             tool_call=ToolCall(id="call-1", name="read", arguments={"path": "a.py"})
         )
     )
+    renderer.render(ToolExecutionUpdateEvent(tool_call_id="call-1", message="reading"))
     renderer.render(
         ToolExecutionEndEvent(
             result=AgentToolResult(tool_call_id="call-1", name="read", ok=True, content="done")
@@ -39,7 +41,9 @@ def test_transcript_renderer_streams_text_and_tool_events(
     assert renderer.finish() is True
     assert captured.out == "Hello\n"
     assert "→ read {'path': 'a.py'}" in captured.err
+    assert "… reading" in captured.err
     assert "✓ read" in captured.err
+    assert "done" in captured.err
 
 
 def test_transcript_renderer_fails_on_non_recoverable_error(
