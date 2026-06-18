@@ -99,6 +99,8 @@ class CompletionActionTarget(Protocol):
 
     def action_cycle_thinking(self) -> None: ...
 
+    def action_toggle_tool_results(self) -> None: ...
+
     async def action_submit_prompt(self) -> None: ...
 
 
@@ -175,6 +177,10 @@ class PromptInput(TextArea):
         """Cycle the app-level thinking mode."""
         self._completion_target().action_cycle_thinking()
 
+    def action_toggle_tool_results(self) -> None:
+        """Toggle app-level tool result display."""
+        self._completion_target().action_toggle_tool_results()
+
     async def action_quit(self) -> None:
         """Quit the app through the app-level action."""
         await self.app.action_quit()
@@ -210,6 +216,9 @@ class PromptInput(TextArea):
         elif _is_thinking_cycle_key(event.key, keybindings.thinking_cycle):
             event.stop()
             self._completion_target().action_cycle_thinking()
+        elif event.key == keybindings.toggle_tool_results:
+            event.stop()
+            self._completion_target().action_toggle_tool_results()
         elif event.key == keybindings.completion_next:
             event.stop()
             self._completion_target().action_completion_next()
@@ -1089,6 +1098,12 @@ class TauTuiApp(App[None]):
             return
         self.run_worker(self._cycle_thinking_level(), exclusive=False)
 
+    def action_toggle_tool_results(self) -> None:
+        """Toggle inline tool result details in the transcript."""
+        expanded = self.state.toggle_tool_results()
+        self._refresh()
+        self._notify("Tool results expanded." if expanded else "Tool results collapsed.")
+
     def _handle_session_picker_result(self, session_id: str | None) -> None:
         if session_id is None:
             return
@@ -1433,6 +1448,7 @@ def _app_bindings(keybindings: TuiKeybindings) -> list[Binding]:
             "Previous completion",
             priority=True,
         ),
+        Binding(keybindings.toggle_tool_results, "toggle_tool_results", "Tool results"),
         Binding(keybindings.quit, "quit", "Quit"),
     ]
 
@@ -1442,6 +1458,12 @@ def _prompt_bindings(keybindings: TuiKeybindings) -> list[Binding]:
         Binding(keybindings.command_palette, "open_command_palette", show=False, priority=True),
         Binding(keybindings.session_picker, "open_session_picker", show=False, priority=True),
         Binding(keybindings.thinking_cycle, "cycle_thinking", show=False, priority=True),
+        Binding(
+            keybindings.toggle_tool_results,
+            "toggle_tool_results",
+            show=False,
+            priority=True,
+        ),
         Binding(keybindings.accept_completion, "accept_completion", show=False, priority=True),
         Binding(keybindings.completion_next, "completion_next", show=False, priority=True),
         Binding(keybindings.completion_previous, "completion_previous", show=False, priority=True),

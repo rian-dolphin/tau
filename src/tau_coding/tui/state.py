@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from tau_agent.messages import AgentMessage
+from tau_agent.tools import AgentToolResult, ToolCall
 from tau_agent.types import JSONValue
 
 ChatItemRole = Literal["user", "assistant", "tool", "error", "status"]
@@ -19,6 +20,8 @@ class ChatItem:
 
     role: ChatItemRole
     text: str
+    tool_call_id: str | None = None
+    tool_result_text: str | None = None
 
 
 @dataclass(slots=True)
@@ -29,10 +32,57 @@ class TuiState:
     assistant_buffer: str = ""
     running: bool = False
     error: str | None = None
+    show_tool_results: bool = False
 
-    def add_item(self, role: ChatItemRole, text: str) -> None:
+    def add_item(
+        self,
+        role: ChatItemRole,
+        text: str,
+        *,
+        tool_call_id: str | None = None,
+        tool_result_text: str | None = None,
+    ) -> None:
         """Append a transcript item."""
-        self.items.append(ChatItem(role=role, text=text))
+        self.items.append(
+            ChatItem(
+                role=role,
+                text=text,
+                tool_call_id=tool_call_id,
+                tool_result_text=tool_result_text,
+            )
+        )
+
+    def add_tool_call(self, tool_call: ToolCall) -> None:
+        """Append a collapsed tool-call item."""
+        self.add_item(
+            "tool",
+            format_tool_call_block(tool_call),
+            tool_call_id=tool_call.id,
+        )
+
+    def record_tool_result(self, result: AgentToolResult) -> None:
+        """Attach a tool result to its matching call, or append an orphan result."""
+        result_text = format_tool_result_block(
+            name=result.name,
+            ok=result.ok,
+            content=result.content,
+            data=result.data,
+        )
+        for item in reversed(self.items):
+            if item.role == "tool" and item.tool_call_id == result.tool_call_id:
+                item.tool_result_text = result_text
+                return
+        self.add_item(
+            "tool",
+            format_tool_result_summary(name=result.name, ok=result.ok),
+            tool_call_id=result.tool_call_id,
+            tool_result_text=result_text,
+        )
+
+    def toggle_tool_results(self) -> bool:
+        """Toggle expanded display for tool results and return the new state."""
+        self.show_tool_results = not self.show_tool_results
+        return self.show_tool_results
 
     def clear(self) -> None:
         """Clear visible transcript state without modifying durable session history."""
@@ -49,17 +99,30 @@ class TuiState:
                 if message.content:
                     self.add_item("assistant", message.content)
                 for tool_call in message.tool_calls:
-                    self.add_item("tool", f"→ {tool_call.name} {tool_call.arguments}")
+                    self.add_tool_call(tool_call)
             elif message.role == "tool":
-                self.add_item(
-                    "tool",
-                    format_tool_result_block(
+                self.record_tool_result(
+                    AgentToolResult(
+                        tool_call_id=message.tool_call_id,
                         name=message.name,
                         ok=message.ok,
                         content=message.content,
                         data=message.data,
-                    ),
+                        details=message.details,
+                        error=message.error,
+                    )
                 )
+
+
+def format_tool_call_block(tool_call: ToolCall) -> str:
+    """Format a collapsed tool call for live and restored transcript blocks."""
+    return f"→ {tool_call.name} {tool_call.arguments}"
+
+
+def format_tool_result_summary(*, name: str, ok: bool) -> str:
+    """Format a terse tool result line for orphaned results."""
+    status = "✓" if ok else "✗"
+    return f"{status} {name}"
 
 
 def format_tool_result_block(

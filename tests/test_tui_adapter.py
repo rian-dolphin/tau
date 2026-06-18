@@ -94,10 +94,10 @@ def test_tui_adapter_records_tool_updates_and_results() -> None:
         )
     )
 
-    assert [(item.role, item.text) for item in state.items] == [
-        ("tool", "… reading"),
-        ("tool", "✓ read\ndone"),
-        ("tool", "✗ bash\nfailed"),
+    assert [(item.role, item.text, item.tool_result_text) for item in state.items] == [
+        ("tool", "… reading", None),
+        ("tool", "✓ read", "✓ read\ndone"),
+        ("tool", "✗ bash", "✗ bash\nfailed"),
     ]
 
 
@@ -128,9 +128,10 @@ def test_tui_adapter_renders_live_edit_patch() -> None:
         )
     )
 
-    assert [(item.role, item.text) for item in state.items] == [
+    assert [(item.role, item.text, item.tool_result_text) for item in state.items] == [
         (
             "tool",
+            "✓ edit",
             "✓ edit\n"
             "Successfully replaced 1 block.\n"
             "\n"

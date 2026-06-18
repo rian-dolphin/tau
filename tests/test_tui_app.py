@@ -18,6 +18,7 @@ from tau_agent import (
     MessageEndEvent,
     ToolCall,
     ToolExecutionEndEvent,
+    ToolExecutionStartEvent,
     ToolResultMessage,
     UserMessage,
 )
@@ -283,6 +284,27 @@ def test_chat_items_render_fenced_code_without_markers() -> None:
     assert "python" not in output
 
 
+def test_tool_chat_items_hide_and_show_result_text() -> None:
+    item = ChatItem(
+        role="tool",
+        text="→ read {'path': 'README.md'}",
+        tool_result_text="✓ read\nfull file contents",
+    )
+
+    collapsed_console = Console(record=True, width=80)
+    collapsed_console.print(render_chat_item(item))
+    collapsed = collapsed_console.export_text()
+
+    expanded_console = Console(record=True, width=80)
+    expanded_console.print(render_chat_item(item, show_tool_results=True))
+    expanded = expanded_console.export_text()
+
+    assert "→ read" in collapsed
+    assert "full file contents" not in collapsed
+    assert "→ read" in expanded
+    assert "full file contents" in expanded
+
+
 def test_assistant_chat_items_render_markdown_lists() -> None:
     console = Console(record=True, width=60)
     item = ChatItem(role="assistant", text="Plan:\n\n- inspect\n- patch")
@@ -480,12 +502,12 @@ def test_tui_app_loads_restored_messages_into_display_state() -> None:
         )
     )
 
-    assert [(item.role, item.text) for item in app.state.items] == [
-        ("user", "Read the file"),
-        ("assistant", "I'll inspect it."),
-        ("tool", "→ edit {'path': 'README.md'}"),
+    assert [(item.role, item.text, item.tool_result_text) for item in app.state.items] == [
+        ("user", "Read the file", None),
+        ("assistant", "I'll inspect it.", None),
         (
             "tool",
+            "→ edit {'path': 'README.md'}",
             "✓ edit\n"
             "Successfully replaced 1 block.\n"
             "\n"
@@ -1030,6 +1052,29 @@ async def test_tui_app_thinking_command_updates_session() -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_app_toggles_tool_results_from_keybinding() -> None:
+    app = TauTuiApp(FakeSession())
+    notifications: list[str] = []
+
+    def fake_notify(message: str, **kwargs: object) -> None:
+        del kwargs
+        notifications.append(message)
+
+    app._notify = fake_notify  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        assert app.state.show_tool_results is False
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+        assert app.state.show_tool_results is True
+        await pilot.press("ctrl+o")
+        await pilot.pause()
+
+    assert app.state.show_tool_results is False
+    assert notifications == ["Tool results expanded.", "Tool results collapsed."]
+
+
+@pytest.mark.anyio
 async def test_tui_app_cycles_thinking_from_keybinding() -> None:
     session = FakeSession()
     app = TauTuiApp(session)
@@ -1127,6 +1172,9 @@ async def test_tui_prompt_worker_refreshes_context_after_message_changes() -> No
             self.context_token_estimate = 30
             yield MessageEndEvent(message=AssistantMessage(content="Using a tool."))
             self.context_token_estimate = 40
+            yield ToolExecutionStartEvent(
+                tool_call=ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
+            )
             yield ToolExecutionEndEvent(
                 result=AgentToolResult(
                     tool_call_id="call-1",
@@ -1149,11 +1197,11 @@ async def test_tui_prompt_worker_refreshes_context_after_message_changes() -> No
 
     await app._run_prompt("read README")
 
-    assert observed_context == [10, 20, 30, 40, 50]
-    assert [(item.role, item.text) for item in app.state.items] == [
-        ("user", "read README"),
-        ("assistant", "Using a tool."),
-        ("tool", "✓ read\ncontents"),
+    assert observed_context == [10, 20, 30, 40, 40, 50]
+    assert [(item.role, item.text, item.tool_result_text) for item in app.state.items] == [
+        ("user", "read README", None),
+        ("assistant", "Using a tool.", None),
+        ("tool", "→ read {'path': 'README.md'}", "✓ read\ncontents"),
     ]
 
 

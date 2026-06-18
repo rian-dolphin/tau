@@ -131,7 +131,11 @@ class TranscriptView(RichLog):
         self.clear()
         for item in state.items:
             self.write(
-                render_chat_item(item, theme=theme),
+                render_chat_item(
+                    item,
+                    theme=theme,
+                    show_tool_results=state.show_tool_results,
+                ),
                 expand=True,
                 shrink=True,
                 scroll_end=scroll_end,
@@ -141,6 +145,7 @@ class TranscriptView(RichLog):
                 render_chat_item(
                     ChatItem(role="assistant", text=state.assistant_buffer),
                     theme=theme,
+                    show_tool_results=state.show_tool_results,
                 ),
                 expand=True,
                 shrink=True,
@@ -240,11 +245,12 @@ def render_chat_item(
     item: ChatItem,
     *,
     theme: TuiTheme = TAU_DARK_THEME,
+    show_tool_results: bool = False,
 ) -> RenderableType:
     """Render a chat item as a standalone Toad-inspired transcript block."""
     role_style = theme.role_styles[item.role]
     body = _render_chat_body(
-        item.text,
+        _visible_chat_text(item, show_tool_results=show_tool_results),
         role=item.role,
         body_style=role_style.body,
         syntax_theme=theme.syntax_theme,
@@ -257,6 +263,12 @@ def render_chat_item(
         Padding(body, (0, 1, 0, 1), style=role_style.body),
     )
     return Padding(table, (1, 1, 1, 0), style=role_style.body)
+
+
+def _visible_chat_text(item: ChatItem, *, show_tool_results: bool) -> str:
+    if item.role != "tool" or not show_tool_results or not item.tool_result_text:
+        return item.text
+    return f"{item.text}\n\n{item.tool_result_text}"
 
 
 def _render_chat_body(

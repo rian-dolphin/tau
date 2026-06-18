@@ -119,11 +119,12 @@ Example:
   "keybindings": {
     "cancel": "escape",
     "command_palette": "ctrl+j",
-    "session_picker": "ctrl+o",
+    "session_picker": "ctrl+r",
     "accept_completion": "f2",
     "completion_next": "down",
     "completion_previous": "up",
     "thinking_cycle": "shift+tab",
+    "toggle_tool_results": "ctrl+o",
     "quit": "ctrl+d"
   }
 }

@@ -23,6 +23,7 @@ class TuiKeybindings:
     completion_next: str = "down"
     completion_previous: str = "up"
     thinking_cycle: str = "shift+tab"
+    toggle_tool_results: str = "ctrl+o"
     quit: str = "ctrl+d"
 
     def to_json(self) -> dict[str, str]:
@@ -35,6 +36,7 @@ class TuiKeybindings:
             "completion_next": self.completion_next,
             "completion_previous": self.completion_previous,
             "thinking_cycle": self.thinking_cycle,
+            "toggle_tool_results": self.toggle_tool_results,
             "quit": self.quit,
         }
 

@@ -12,7 +12,7 @@ from tau_agent import (
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
 )
-from tau_coding.tui.state import TuiState, format_tool_result_block
+from tau_coding.tui.state import TuiState
 
 
 class TuiEventAdapter:
@@ -47,15 +47,6 @@ class TuiEventAdapter:
                 self.state.add_item("user", event.message.content)
                 return
             if event.message.role == "tool":
-                self.state.add_item(
-                    "tool",
-                    format_tool_result_block(
-                        name=event.message.name,
-                        ok=event.message.ok,
-                        content=event.message.content,
-                        data=event.message.data,
-                    ),
-                )
                 return
             text = event.message.content or self.state.assistant_buffer
             if text:
@@ -65,10 +56,7 @@ class TuiEventAdapter:
 
         if isinstance(event, ToolExecutionStartEvent):
             self._flush_assistant_buffer()
-            self.state.add_item(
-                "tool",
-                f"→ {event.tool_call.name} {event.tool_call.arguments}",
-            )
+            self.state.add_tool_call(event.tool_call)
             return
 
         if isinstance(event, ToolExecutionUpdateEvent):
@@ -76,15 +64,7 @@ class TuiEventAdapter:
             return
 
         if isinstance(event, ToolExecutionEndEvent):
-            self.state.add_item(
-                "tool",
-                format_tool_result_block(
-                    name=event.result.name,
-                    ok=event.result.ok,
-                    content=event.result.content,
-                    data=event.result.data,
-                ),
-            )
+            self.state.record_tool_result(event.result)
             return
 
         if isinstance(event, ErrorEvent):
