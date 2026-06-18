@@ -699,6 +699,18 @@ async def test_tui_app_quits_from_focused_prompt_with_default_keybinding() -> No
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        visible_bindings = [
+            binding
+            for binding in prompt._bindings.get_bindings_for_key("ctrl+d")
+            if binding.show
+        ]
+
+        assert any(
+            binding.action == "quit" and binding.description == "Quit"
+            for binding in visible_bindings
+        )
+
         await pilot.press("ctrl+d")
         await pilot.pause()
 

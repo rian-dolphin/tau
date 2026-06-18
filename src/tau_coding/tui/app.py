@@ -716,6 +716,7 @@ def _prompt_bindings(keybindings: TuiKeybindings) -> list[Binding]:
         Binding(keybindings.accept_completion, "accept_completion", show=False, priority=True),
         Binding(keybindings.completion_next, "completion_next", show=False, priority=True),
         Binding(keybindings.completion_previous, "completion_previous", show=False, priority=True),
+        Binding(keybindings.quit, "quit", "Quit", priority=True),
     ]
 
 
