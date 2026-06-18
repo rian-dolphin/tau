@@ -9,6 +9,7 @@ from tau_agent import (
     AssistantMessage,
     ErrorEvent,
     RetryEvent,
+    ThinkingDeltaEvent,
     ToolCall,
     ToolExecutionEndEvent,
     ToolResultMessage,
@@ -23,6 +24,7 @@ from tau_ai import (
     ProviderResponseStartEvent,
     ProviderRetryEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
 )
 
 
@@ -66,6 +68,48 @@ async def test_agent_loop_streams_text_and_appends_assistant_message() -> None:
         "agent_end",
     ]
     assert messages == [UserMessage(content="Say hello"), assistant]
+
+
+@pytest.mark.anyio
+async def test_agent_loop_streams_thinking_deltas_without_recording_them() -> None:
+    messages = [UserMessage(content="Think briefly")]
+    assistant = AssistantMessage(content="Done")
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderThinkingDeltaEvent(delta="hidden "),
+                ProviderThinkingDeltaEvent(delta="reasoning"),
+                ProviderTextDeltaEvent(delta="Done"),
+                ProviderResponseEndEvent(message=assistant, finish_reason="stop"),
+            ]
+        ]
+    )
+
+    events = await _collect(
+        run_agent_loop(
+            provider=provider,
+            model="fake",
+            system="You are Tau.",
+            messages=messages,
+            tools=[],
+        )
+    )
+
+    thinking_events = [event for event in events if isinstance(event, ThinkingDeltaEvent)]
+    assert [event.delta for event in thinking_events] == ["hidden ", "reasoning"]
+    assert [event.type for event in events] == [
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "thinking_delta",
+        "thinking_delta",
+        "message_delta",
+        "message_end",
+        "turn_end",
+        "agent_end",
+    ]
+    assert messages == [UserMessage(content="Think briefly"), assistant]
 
 
 @pytest.mark.anyio

@@ -40,6 +40,15 @@ class ProviderTextDeltaEvent(BaseModel):
     delta: str
 
 
+class ProviderThinkingDeltaEvent(BaseModel):
+    """A streamed thinking/reasoning fragment from the provider."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["thinking_delta"] = "thinking_delta"
+    delta: str
+
+
 class ProviderToolCallEvent(BaseModel):
     """A complete tool call requested by the model."""
 
@@ -73,6 +82,7 @@ type ProviderEvent = (
     ProviderResponseStartEvent
     | ProviderRetryEvent
     | ProviderTextDeltaEvent
+    | ProviderThinkingDeltaEvent
     | ProviderToolCallEvent
     | ProviderResponseEndEvent
     | ProviderErrorEvent

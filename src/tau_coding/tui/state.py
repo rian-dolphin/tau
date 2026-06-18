@@ -8,7 +8,7 @@ from tau_agent.messages import AgentMessage
 from tau_agent.tools import AgentToolResult, ToolCall
 from tau_agent.types import JSONValue
 
-ChatItemRole = Literal["user", "assistant", "tool", "error", "status"]
+ChatItemRole = Literal["user", "assistant", "tool", "error", "status", "thinking"]
 TOOL_RESULT_PREVIEW_LINES = 8
 TOOL_PATCH_PREVIEW_LINES = 32
 TOOL_RESULT_PREVIEW_CHARS = 2_000
@@ -33,6 +33,7 @@ class TuiState:
     running: bool = False
     error: str | None = None
     show_tool_results: bool = False
+    show_thinking: bool = False
     selected_item_index: int | None = None
 
     def add_item(
@@ -63,6 +64,13 @@ class TuiState:
             tool_call_id=tool_call.id,
         )
 
+    def add_thinking_delta(self, delta: str) -> None:
+        """Append a thinking/reasoning fragment to the current thinking block."""
+        if self.items and self.items[-1].role == "thinking":
+            self.items[-1].text += delta
+            return
+        self.add_item("thinking", delta)
+
     def record_tool_result(self, result: AgentToolResult) -> None:
         """Attach a tool result to its matching call, or append an orphan result."""
         result_text = format_tool_result_block(
@@ -86,6 +94,20 @@ class TuiState:
         """Toggle expanded display for tool results and return the new state."""
         self.show_tool_results = not self.show_tool_results
         return self.show_tool_results
+
+    def toggle_thinking(self) -> bool:
+        """Toggle thinking-token display and return the new state."""
+        self.show_thinking = not self.show_thinking
+        if (
+            not self.show_thinking
+            and self.selected_item_index is not None
+            and (
+                not 0 <= self.selected_item_index < len(self.items)
+                or self.items[self.selected_item_index].role == "thinking"
+            )
+        ):
+            self.selected_item_index = None
+        return self.show_thinking
 
     def clear(self) -> None:
         """Clear visible transcript state without modifying durable session history."""
@@ -124,29 +146,43 @@ class TuiState:
         if not 0 <= self.selected_item_index < len(self.items):
             self.selected_item_index = None
             return None
+        if not self._item_is_visible(self.selected_item_index):
+            self.selected_item_index = None
+            return None
         return self.items[self.selected_item_index]
 
     def select_next_item(self) -> ChatItem | None:
         """Move selection toward newer transcript items."""
-        if not self.items:
+        visible_indices = self._visible_item_indices()
+        if not visible_indices:
             self.selected_item_index = None
             return None
-        if self.selected_item_index is None:
-            self.selected_item_index = len(self.items) - 1
+        if self.selected_item_index is None or self.selected_item_index not in visible_indices:
+            self.selected_item_index = visible_indices[-1]
         else:
-            self.selected_item_index = min(self.selected_item_index + 1, len(self.items) - 1)
+            current = visible_indices.index(self.selected_item_index)
+            self.selected_item_index = visible_indices[min(current + 1, len(visible_indices) - 1)]
         return self.items[self.selected_item_index]
 
     def select_previous_item(self) -> ChatItem | None:
         """Move selection toward older transcript items."""
-        if not self.items:
+        visible_indices = self._visible_item_indices()
+        if not visible_indices:
             self.selected_item_index = None
             return None
-        if self.selected_item_index is None:
-            self.selected_item_index = len(self.items) - 1
+        if self.selected_item_index is None or self.selected_item_index not in visible_indices:
+            self.selected_item_index = visible_indices[-1]
         else:
-            self.selected_item_index = max(self.selected_item_index - 1, 0)
+            current = visible_indices.index(self.selected_item_index)
+            self.selected_item_index = visible_indices[max(current - 1, 0)]
         return self.items[self.selected_item_index]
+
+    def _visible_item_indices(self) -> list[int]:
+        return [index for index in range(len(self.items)) if self._item_is_visible(index)]
+
+    def _item_is_visible(self, index: int) -> bool:
+        item = self.items[index]
+        return item.role != "thinking" or self.show_thinking
 
 
 def format_tool_call_block(tool_call: ToolCall) -> str:

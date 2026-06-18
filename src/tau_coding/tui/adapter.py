@@ -9,6 +9,7 @@ from tau_agent import (
     MessageEndEvent,
     MessageStartEvent,
     RetryEvent,
+    ThinkingDeltaEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
@@ -41,6 +42,10 @@ class TuiEventAdapter:
 
         if isinstance(event, MessageDeltaEvent):
             self.state.assistant_buffer += event.delta
+            return
+
+        if isinstance(event, ThinkingDeltaEvent):
+            self.state.add_thinking_delta(event.delta)
             return
 
         if isinstance(event, MessageEndEvent):

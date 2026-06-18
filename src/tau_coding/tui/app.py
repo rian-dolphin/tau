@@ -116,6 +116,8 @@ class CompletionActionTarget(Protocol):
 
     def action_toggle_tool_results(self) -> None: ...
 
+    def action_toggle_thinking(self) -> None: ...
+
     def action_select_previous_message(self) -> None: ...
 
     def action_select_next_message(self) -> None: ...
@@ -208,6 +210,10 @@ class PromptInput(TextArea):
         """Toggle app-level tool result display."""
         self._completion_target().action_toggle_tool_results()
 
+    def action_toggle_thinking(self) -> None:
+        """Toggle app-level thinking-token display."""
+        self._completion_target().action_toggle_thinking()
+
     def action_select_previous_message(self) -> None:
         """Select the previous transcript message."""
         self._completion_target().action_select_previous_message()
@@ -258,6 +264,9 @@ class PromptInput(TextArea):
         elif event.key == keybindings.toggle_tool_results:
             event.stop()
             self._completion_target().action_toggle_tool_results()
+        elif event.key == keybindings.toggle_thinking:
+            event.stop()
+            self._completion_target().action_toggle_thinking()
         elif event.key == keybindings.message_previous:
             event.stop()
             self._completion_target().action_select_previous_message()
@@ -1248,6 +1257,12 @@ class TauTuiApp(App[None]):
         self._refresh()
         self._notify("Tool results expanded." if expanded else "Tool results collapsed.")
 
+    def action_toggle_thinking(self) -> None:
+        """Toggle thinking-token display in the transcript."""
+        visible = self.state.toggle_thinking()
+        self._refresh()
+        self._notify("Thinking tokens shown." if visible else "Thinking tokens hidden.")
+
     def action_select_previous_message(self) -> None:
         """Select the previous transcript message for copy operations."""
         item = self.state.select_previous_item()
@@ -1692,6 +1707,7 @@ def _app_bindings(keybindings: TuiKeybindings) -> list[Binding]:
             priority=True,
         ),
         Binding(keybindings.toggle_tool_results, "toggle_tool_results", "Tool results"),
+        Binding(keybindings.toggle_thinking, "toggle_thinking", "Thinking tokens"),
         Binding(keybindings.message_previous, "select_previous_message", "Prev msg"),
         Binding(keybindings.message_next, "select_next_message", "Next msg"),
         Binding(keybindings.copy_message, "copy_selected_message", "Copy msg"),
@@ -1707,6 +1723,12 @@ def _prompt_bindings(keybindings: TuiKeybindings) -> list[Binding]:
         Binding(
             keybindings.toggle_tool_results,
             "toggle_tool_results",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            keybindings.toggle_thinking,
+            "toggle_thinking",
             show=False,
             priority=True,
         ),

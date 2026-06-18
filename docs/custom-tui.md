@@ -55,11 +55,18 @@ The event stream contains provider-neutral `AgentEvent` values from
 
 - `AgentStartEvent` and `AgentEndEvent`
 - `MessageStartEvent`, `MessageDeltaEvent`, and `MessageEndEvent`
+- `ThinkingDeltaEvent`
 - `ToolExecutionStartEvent`, `ToolExecutionUpdateEvent`, and `ToolExecutionEndEvent`
 - `ErrorEvent`
 
 Do not render from provider-specific chunks. The provider layer translates model
 output into Tau events so every frontend can share the same behavior.
+
+`ThinkingDeltaEvent` carries optional streamed reasoning text from providers
+that expose it. Keep it separate from assistant message text, hide it by
+default, and let the user opt in from the frontend. The built-in Textual app
+uses `Ctrl+T` for this toggle and renders thinking content with a distinct
+transcript style.
 
 ## Restoring Visible State
 
@@ -209,6 +216,11 @@ The built-in configurable action names are:
 - `completion_next`
 - `completion_previous`
 - `thinking_cycle`
+- `toggle_thinking`
+- `toggle_tool_results`
+- `message_previous`
+- `message_next`
+- `copy_message`
 - `quit`
 
 The built-in themes are `tau-dark` and `high-contrast`. They resolve to

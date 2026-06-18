@@ -8,6 +8,7 @@ from tau_agent import (
     MessageEndEvent,
     MessageStartEvent,
     RetryEvent,
+    ThinkingDeltaEvent,
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
@@ -54,6 +55,39 @@ def test_tui_adapter_builds_user_items_from_streamed_messages() -> None:
 
     assert state.assistant_buffer == ""
     assert [(item.role, item.text) for item in state.items] == [("user", "Hello Tau")]
+
+
+def test_tui_adapter_groups_thinking_deltas_separately() -> None:
+    state = TuiState()
+    adapter = TuiEventAdapter(state)
+
+    adapter.apply(ThinkingDeltaEvent(delta="hidden "))
+    adapter.apply(ThinkingDeltaEvent(delta="reasoning"))
+
+    assert [(item.role, item.text) for item in state.items] == [
+        ("thinking", "hidden reasoning")
+    ]
+    assert state.show_thinking is False
+
+
+def test_tui_state_selection_skips_hidden_thinking_items() -> None:
+    state = TuiState()
+    state.add_item("assistant", "visible answer")
+    state.add_thinking_delta("hidden reasoning")
+
+    selected = state.select_previous_item()
+
+    assert selected is not None
+    assert selected.text == "visible answer"
+    assert state.selected_item_index == 0
+
+    state.show_thinking = True
+    selected = state.select_next_item()
+    assert selected is not None
+    assert selected.text == "hidden reasoning"
+
+    state.toggle_thinking()
+    assert state.selected_item() is None
 
 
 def test_tui_adapter_flushes_assistant_buffer_before_tool_events() -> None:

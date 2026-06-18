@@ -23,6 +23,7 @@ class TuiKeybindings:
     completion_next: str = "down"
     completion_previous: str = "up"
     thinking_cycle: str = "shift+tab"
+    toggle_thinking: str = "ctrl+t"
     toggle_tool_results: str = "ctrl+o"
     message_previous: str = "alt+up"
     message_next: str = "alt+down"
@@ -39,6 +40,7 @@ class TuiKeybindings:
             "completion_next": self.completion_next,
             "completion_previous": self.completion_previous,
             "thinking_cycle": self.thinking_cycle,
+            "toggle_thinking": self.toggle_thinking,
             "toggle_tool_results": self.toggle_tool_results,
             "message_previous": self.message_previous,
             "message_next": self.message_next,
@@ -112,6 +114,7 @@ TAU_DARK_THEME = TuiTheme(
         "tool": TuiRoleStyle(border="#8a7a52", body="#cbd5e1 on #000000"),
         "error": TuiRoleStyle(border="#ff4f4f", body="#ffb4b4 on #000000"),
         "status": TuiRoleStyle(border="#526070", body="#aab4c2 on #000000"),
+        "thinking": TuiRoleStyle(border="#4b5563", body="#9ca3af on #000000"),
     },
 )
 
@@ -143,6 +146,7 @@ HIGH_CONTRAST_THEME = TuiTheme(
         "tool": TuiRoleStyle(border="#ffd000", body="white on #211900"),
         "error": TuiRoleStyle(border="#ff4f4f", body="white on #260000"),
         "status": TuiRoleStyle(border="#ffffff", body="white on #111111"),
+        "thinking": TuiRoleStyle(border="#00b7ff", body="white on #001626"),
     },
 )
 

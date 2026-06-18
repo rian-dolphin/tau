@@ -90,10 +90,11 @@ adapters implement a provider-specific mapping.
 
 ## Boundary
 
-Thinking controls remain outside `tau_agent` provider execution. This phase adds
-OpenAI-compatible reasoning-effort payloads and model capability clamping in
-`tau_ai`/`tau_coding`, but it does not render thinking traces or expose hidden
-provider reasoning content in the transcript.
+Thinking controls remain outside Textual-specific rendering. Provider adapters
+translate supported reasoning streams into provider-neutral thinking events,
+`tau_agent` forwards those events without recording them as durable assistant
+messages, and the Textual TUI decides whether to show or hide them. The built-in
+TUI hides thinking tokens by default and exposes `Ctrl+T` as a frontend toggle.
 
 ## Tests
 
@@ -103,6 +104,9 @@ The phase is covered by:
 tests/test_thinking.py
 tests/test_commands.py
 tests/test_coding_session.py
+tests/test_agent_loop.py
+tests/test_tau_ai.py
+tests/test_tui_adapter.py
 tests/test_tui_config.py
 tests/test_tui_app.py
 ```

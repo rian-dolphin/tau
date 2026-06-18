@@ -127,6 +127,7 @@ Example:
     "completion_next": "down",
     "completion_previous": "up",
     "thinking_cycle": "shift+tab",
+    "toggle_thinking": "ctrl+t",
     "toggle_tool_results": "ctrl+o",
     "message_previous": "alt+up",
     "message_next": "alt+down",
@@ -267,8 +268,12 @@ Useful TUI commands:
 /thinking high
 ```
 
-In the TUI, `Shift-Tab` cycles the active thinking mode by default. Remap it in
-`~/.tau/tui.json` with the `thinking_cycle` keybinding.
+In the TUI, `Shift-Tab` cycles the active thinking mode by default. `Ctrl+T`
+toggles display of streamed thinking/reasoning tokens when the active provider
+emits them. Thinking tokens are hidden by default and can be remapped in
+`~/.tau/tui.json` with the `toggle_thinking` keybinding.
+
+Remap the thinking-mode cycle shortcut with the `thinking_cycle` keybinding.
 
 Thinking controls are model-aware. Tau enables them only when the active
 provider configuration declares supported levels for the active model. Custom

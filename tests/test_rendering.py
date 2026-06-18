@@ -10,6 +10,7 @@ from tau_agent import (
     MessageEndEvent,
     MessageStartEvent,
     RetryEvent,
+    ThinkingDeltaEvent,
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
@@ -24,6 +25,7 @@ def test_transcript_renderer_streams_text_and_tool_events(
     renderer = TranscriptRenderer()
 
     renderer.render(MessageStartEvent())
+    renderer.render(ThinkingDeltaEvent(delta="hidden reasoning"))
     renderer.render(MessageDeltaEvent(delta="Hel"))
     renderer.render(MessageDeltaEvent(delta="lo"))
     renderer.render(
@@ -49,6 +51,8 @@ def test_transcript_renderer_streams_text_and_tool_events(
     captured = capsys.readouterr()
     assert renderer.finish() is True
     assert captured.out == "Hello\n"
+    assert "hidden reasoning" not in captured.out
+    assert "hidden reasoning" not in captured.err
     assert "… Retrying provider request 2/3 after HTTP 503." in captured.err
     assert "→ read a.py" in captured.err
     assert "… reading" in captured.err
@@ -73,6 +77,7 @@ def test_final_text_renderer_prints_only_final_message(
 ) -> None:
     renderer = FinalTextRenderer()
 
+    renderer.render(ThinkingDeltaEvent(delta="hidden reasoning"))
     renderer.render(MessageDeltaEvent(delta="ignored"))
     captured_before_finish = capsys.readouterr()
     ok = renderer.finish()
@@ -81,6 +86,7 @@ def test_final_text_renderer_prints_only_final_message(
     assert ok is True
     assert captured_before_finish.out == ""
     assert captured_after_finish.out == ""
+    assert captured_after_finish.err == ""
 
     renderer.render(MessageEndEvent(message=AssistantMessage(content="Final answer")))
     ok = renderer.finish()
@@ -107,10 +113,12 @@ def test_json_renderer_emits_jsonl(capsys: pytest.CaptureFixture[str]) -> None:
     renderer = JsonEventRenderer()
 
     renderer.render(MessageStartEvent())
+    renderer.render(ThinkingDeltaEvent(delta="hidden reasoning"))
     renderer.render(ErrorEvent(message="provider failed", recoverable=False))
 
     captured = capsys.readouterr()
     lines = captured.out.splitlines()
     assert json.loads(lines[0]) == {"type": "message_start", "message_role": "assistant"}
-    assert json.loads(lines[1])["type"] == "error"
+    assert json.loads(lines[1]) == {"type": "thinking_delta", "delta": "hidden reasoning"}
+    assert json.loads(lines[2])["type"] == "error"
     assert renderer.finish() is False

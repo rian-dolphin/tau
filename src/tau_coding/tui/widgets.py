@@ -137,6 +137,8 @@ class TranscriptView(RichLog):
         self._last_render_width = self.scrollable_content_region.width
         self.clear()
         for index, item in enumerate(state.items):
+            if item.role == "thinking" and not state.show_thinking:
+                continue
             self.write(
                 render_chat_item(
                     item,

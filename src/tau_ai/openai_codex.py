@@ -22,6 +22,7 @@ from tau_ai.events import (
     ProviderResponseEndEvent,
     ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
 from tau_ai.provider import CancellationToken
@@ -407,6 +408,15 @@ async def _codex_provider_events(
             if isinstance(delta, str) and delta:
                 content_parts.append(delta)
                 yield ProviderTextDeltaEvent(delta=delta)
+
+        elif event_type in {
+            "response.reasoning.delta",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_text.delta",
+        }:
+            delta = event.get("delta")
+            if isinstance(delta, str) and delta:
+                yield ProviderThinkingDeltaEvent(delta=delta)
 
         elif event_type in {
             "response.output_item.done",

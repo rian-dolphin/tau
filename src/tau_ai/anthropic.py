@@ -16,6 +16,7 @@ from tau_ai.events import (
     ProviderResponseEndEvent,
     ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
 from tau_ai.provider import CancellationToken
@@ -152,6 +153,11 @@ class AnthropicProvider:
                                         emitted_content = True
                                         content_parts.append(text)
                                         yield ProviderTextDeltaEvent(delta=text)
+                                elif delta_type == "thinking_delta":
+                                    thinking = _string_or_empty(delta.get("thinking"))
+                                    if thinking:
+                                        emitted_content = True
+                                        yield ProviderThinkingDeltaEvent(delta=thinking)
                                 elif delta_type == "input_json_delta":
                                     index = int(chunk.get("index", 0))
                                     builder = tool_builders.setdefault(

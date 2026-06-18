@@ -20,6 +20,7 @@ from tau_ai import (
     ProviderResponseStartEvent,
     ProviderRetryEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
     openai_compatible_config_from_env,
 )
@@ -199,6 +200,48 @@ async def test_openai_compatible_provider_includes_configured_reasoning_effort()
 
     assert isinstance(events[-1], ProviderResponseEndEvent)
     assert loads(requests[0].content)["reasoning_effort"] == "high"
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_provider_streams_reasoning_content() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"reasoning_content":"plan "}}]}\n\n'
+                'data: {"choices":[{"delta":{"reasoning_content":"steps"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"done"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleProvider(
+            OpenAICompatibleConfig(api_key="test-key", base_url="https://example.test/v1"),
+            client=client,
+        )
+
+        events = await _collect(
+            provider.stream_response(
+                model="test-model",
+                system="You are Tau.",
+                messages=[UserMessage(content="Say ok")],
+                tools=[],
+            )
+        )
+
+    assert [event.type for event in events] == [
+        "response_start",
+        "thinking_delta",
+        "thinking_delta",
+        "text_delta",
+        "response_end",
+    ]
+    thinking_events = [event for event in events if isinstance(event, ProviderThinkingDeltaEvent)]
+    assert [event.delta for event in thinking_events] == ["plan ", "steps"]
+    assert isinstance(events[-1], ProviderResponseEndEvent)
+    assert events[-1].message.content == "done"
 
 
 @pytest.mark.anyio
@@ -460,6 +503,54 @@ async def test_openai_codex_provider_formats_request_and_streams_text() -> None:
 
 
 @pytest.mark.anyio
+async def test_openai_codex_provider_streams_reasoning_deltas() -> None:
+    async def credentials() -> OpenAICodexCredentials:
+        return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"type":"response.reasoning.delta","delta":"trace "}\n\n'
+                'data: {"type":"response.reasoning_text.delta","delta":"details"}\n\n'
+                'data: {"type":"response.output_text.delta","delta":"Done"}\n\n'
+                'data: {"type":"response.completed","response":{"status":"completed"}}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICodexProvider(
+            OpenAICodexConfig(
+                credential_resolver=credentials,
+                base_url="https://chatgpt.test/backend-api",
+            ),
+            client=client,
+        )
+
+        events = await _collect(
+            provider.stream_response(
+                model="gpt-5.5",
+                system="You are Tau.",
+                messages=[UserMessage(content="Say done")],
+                tools=[],
+            )
+        )
+
+    assert [event.type for event in events] == [
+        "response_start",
+        "thinking_delta",
+        "thinking_delta",
+        "text_delta",
+        "response_end",
+    ]
+    thinking_events = [event for event in events if isinstance(event, ProviderThinkingDeltaEvent)]
+    assert [event.delta for event in thinking_events] == ["trace ", "details"]
+    assert isinstance(events[-1], ProviderResponseEndEvent)
+    assert events[-1].message.content == "Done"
+
+
+@pytest.mark.anyio
 async def test_openai_codex_provider_streams_tool_calls() -> None:
     async def credentials() -> OpenAICodexCredentials:
         return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
@@ -662,6 +753,53 @@ async def test_anthropic_provider_formats_request_and_streams_text() -> None:
     assert payload["stream"] is True
     assert payload["system"] == "You are Tau."
     assert payload["messages"] == [{"role": "user", "content": "Say hello"}]
+
+
+@pytest.mark.anyio
+async def test_anthropic_provider_streams_thinking_deltas() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"type":"message_start","message":{"content":[]}}\n\n'
+                'data: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"thinking_delta","thinking":"trace "}}\n\n'
+                'data: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"thinking_delta","thinking":"details"}}\n\n'
+                'data: {"type":"content_block_delta","index":0,'
+                '"delta":{"type":"text_delta","text":"Done"}}\n\n'
+                'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n'
+                'data: {"type":"message_stop"}\n\n'
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = AnthropicProvider(
+            AnthropicConfig(api_key="test-key", base_url="https://api.anthropic.test/v1"),
+            client=client,
+        )
+
+        events = await _collect(
+            provider.stream_response(
+                model="claude-test",
+                system="You are Tau.",
+                messages=[UserMessage(content="Say done")],
+                tools=[],
+            )
+        )
+
+    assert [event.type for event in events] == [
+        "response_start",
+        "thinking_delta",
+        "thinking_delta",
+        "text_delta",
+        "response_end",
+    ]
+    thinking_events = [event for event in events if isinstance(event, ProviderThinkingDeltaEvent)]
+    assert [event.delta for event in thinking_events] == ["trace ", "details"]
+    assert isinstance(events[-1], ProviderResponseEndEvent)
+    assert events[-1].message.content == "Done"
 
 
 @pytest.mark.anyio

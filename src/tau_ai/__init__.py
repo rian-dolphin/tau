@@ -17,6 +17,7 @@ from tau_ai.events import (
     ProviderResponseStartEvent,
     ProviderRetryEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
 from tau_ai.fake import FakeProvider
@@ -50,6 +51,7 @@ __all__ = [
     "ProviderResponseEndEvent",
     "ProviderResponseStartEvent",
     "ProviderRetryEvent",
+    "ProviderThinkingDeltaEvent",
     "ProviderTextDeltaEvent",
     "ProviderToolCallEvent",
     "openai_compatible_config_from_env",

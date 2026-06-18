@@ -16,6 +16,7 @@ from tau_ai.events import (
     ProviderResponseEndEvent,
     ProviderResponseStartEvent,
     ProviderTextDeltaEvent,
+    ProviderThinkingDeltaEvent,
     ProviderToolCallEvent,
 )
 from tau_ai.provider import CancellationToken
@@ -143,6 +144,11 @@ class OpenAICompatibleProvider:
                                 emitted_content = True
                                 content_parts.append(content)
                                 yield ProviderTextDeltaEvent(delta=content)
+
+                            thinking = _thinking_delta_text(delta)
+                            if thinking:
+                                emitted_content = True
+                                yield ProviderThinkingDeltaEvent(delta=thinking)
 
                             for tool_call_delta in _tool_call_deltas(delta):
                                 emitted_content = True
@@ -344,6 +350,14 @@ def _tool_call_deltas(delta: Mapping[str, Any]) -> list[Mapping[str, Any]]:
     if not isinstance(tool_calls, list):
         return []
     return [tool_call for tool_call in tool_calls if isinstance(tool_call, Mapping)]
+
+
+def _thinking_delta_text(delta: Mapping[str, Any]) -> str:
+    for field_name in ("reasoning_content", "reasoning", "thinking"):
+        value = delta.get(field_name)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def _is_transient_status(status_code: int) -> bool:

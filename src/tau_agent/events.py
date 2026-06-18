@@ -60,6 +60,13 @@ class MessageDeltaEvent(BaseModel):
     delta: str
 
 
+class ThinkingDeltaEvent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["thinking_delta"] = "thinking_delta"
+    delta: str
+
+
 class MessageEndEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -107,6 +114,7 @@ type AgentEvent = (
     | RetryEvent
     | MessageStartEvent
     | MessageDeltaEvent
+    | ThinkingDeltaEvent
     | MessageEndEvent
     | ToolExecutionStartEvent
     | ToolExecutionUpdateEvent

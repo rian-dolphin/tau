@@ -346,6 +346,16 @@ def test_tool_chat_items_hide_and_show_result_text() -> None:
     assert "full file contents" in expanded
 
 
+def test_thinking_chat_items_use_distinct_style() -> None:
+    console = Console(record=True, width=80)
+
+    console.print(render_chat_item(ChatItem(role="thinking", text="Hidden reasoning")))
+
+    output = console.export_text(styles=True)
+    assert "Hidden reasoning" in output
+    assert "38;2;156;163;175" in output
+
+
 def test_tool_chat_items_color_status_metadata_not_tool_name_or_results() -> None:
     success_console = Console(record=True, width=80)
     success_console.print(
@@ -1337,6 +1347,46 @@ async def test_tui_app_toggles_tool_results_from_keybinding() -> None:
 
     assert app.state.show_tool_results is False
     assert notifications == ["Tool results expanded.", "Tool results collapsed."]
+
+
+@pytest.mark.anyio
+async def test_tui_app_toggles_thinking_tokens_from_keybinding_while_running() -> None:
+    app = TauTuiApp(FakeSession())
+    notifications: list[str] = []
+
+    def fake_notify(message: str, **kwargs: object) -> None:
+        del kwargs
+        notifications.append(message)
+
+    def transcript_text() -> str:
+        transcript = app.query_one("#transcript", TranscriptView)
+        return "\n".join(line.text for line in transcript.lines)
+
+    app._notify = fake_notify  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        app.state.running = True
+        app.state.add_thinking_delta("internal plan")
+        app.state.add_item("assistant", "final answer")
+        app._refresh()
+        await pilot.pause()
+
+        assert app.state.show_thinking is False
+        assert "final answer" in transcript_text()
+        assert "internal plan" not in transcript_text()
+
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert app.state.show_thinking is True
+        assert app.state.running is True
+        assert "internal plan" in transcript_text()
+
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert app.state.show_thinking is False
+        assert "internal plan" not in transcript_text()
+
+    assert notifications == ["Thinking tokens shown.", "Thinking tokens hidden."]
 
 
 @pytest.mark.anyio

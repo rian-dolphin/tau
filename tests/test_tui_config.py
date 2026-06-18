@@ -40,6 +40,7 @@ def test_load_tui_settings_reads_keybindings(tmp_path: Path) -> None:
             "session_picker": "ctrl+y",
             "accept_completion": "f2",
             "thinking_cycle": "f3",
+            "toggle_thinking": "f4",
             "copy_message": "ctrl+b"
           },
           "theme": "high-contrast"
@@ -53,6 +54,7 @@ def test_load_tui_settings_reads_keybindings(tmp_path: Path) -> None:
     assert settings.keybindings.command_palette == "ctrl+j"
     assert settings.keybindings.session_picker == "ctrl+y"
     assert settings.keybindings.toggle_tool_results == "ctrl+o"
+    assert settings.keybindings.toggle_thinking == "f4"
     assert settings.keybindings.accept_completion == "f2"
     assert settings.keybindings.thinking_cycle == "f3"
     assert settings.keybindings.message_previous == "alt+up"
@@ -92,6 +94,7 @@ def test_tui_keybindings_serialize_to_json() -> None:
             session_picker="ctrl+y",
             accept_completion="f2",
             thinking_cycle="f3",
+            toggle_thinking="f4",
             copy_message="ctrl+b",
         ),
         theme="high-contrast",
@@ -100,6 +103,7 @@ def test_tui_keybindings_serialize_to_json() -> None:
     assert settings.to_json()["keybindings"]["command_palette"] == "ctrl+j"
     assert settings.to_json()["keybindings"]["session_picker"] == "ctrl+y"
     assert settings.to_json()["keybindings"]["toggle_tool_results"] == "ctrl+o"
+    assert settings.to_json()["keybindings"]["toggle_thinking"] == "f4"
     assert settings.to_json()["keybindings"]["accept_completion"] == "f2"
     assert settings.to_json()["keybindings"]["thinking_cycle"] == "f3"
     assert settings.to_json()["keybindings"]["message_previous"] == "alt+up"
