@@ -15,6 +15,7 @@ from tau_agent import (
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
 )
+from tau_coding.tui.state import format_tool_call_block
 
 
 class TranscriptRenderer:
@@ -40,12 +41,7 @@ class TranscriptRenderer:
 
         if isinstance(event, ToolExecutionStartEvent):
             self._ensure_assistant_newline()
-            self._print_tool_line(
-                "→",
-                event.tool_call.name,
-                str(event.tool_call.arguments),
-                style="cyan",
-            )
+            self._console.print(Text(format_tool_call_block(event.tool_call), style="cyan"))
             return
 
         if isinstance(event, ToolExecutionUpdateEvent):

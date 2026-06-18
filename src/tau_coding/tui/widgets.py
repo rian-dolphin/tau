@@ -21,7 +21,7 @@ from tau_agent.tools import AgentTool
 from tau_coding.prompt_templates import PromptTemplate
 from tau_coding.skills import Skill
 from tau_coding.tui.autocomplete import CompletionState
-from tau_coding.tui.config import TAU_DARK_THEME, TuiTheme
+from tau_coding.tui.config import TAU_DARK_THEME, TuiRoleStyle, TuiTheme
 from tau_coding.tui.state import ChatItem, TuiState
 
 TAU_SIDEBAR_LOGO = """████████  █████  ██   ██
@@ -248,7 +248,7 @@ def render_chat_item(
     show_tool_results: bool = False,
 ) -> RenderableType:
     """Render a chat item as a standalone Toad-inspired transcript block."""
-    role_style = theme.role_styles[item.role]
+    role_style = _chat_item_role_style(item, theme)
     body = _render_chat_body(
         _visible_chat_text(item, show_tool_results=show_tool_results),
         role=item.role,
@@ -263,6 +263,15 @@ def render_chat_item(
         Padding(body, (0, 1, 0, 1), style=role_style.body),
     )
     return Padding(table, (1, 1, 1, 0), style=role_style.body)
+
+
+def _chat_item_role_style(item: ChatItem, theme: TuiTheme) -> TuiRoleStyle:
+    if item.role == "tool" and item.tool_result_text:
+        if item.tool_result_text.startswith("✓"):
+            return TuiRoleStyle(border="#9cffb1", body="#9cffb1 on #000000")
+        if item.tool_result_text.startswith("✗"):
+            return TuiRoleStyle(border="#ff4f4f", body="#ff4f4f on #000000")
+    return theme.role_styles[item.role]
 
 
 def _visible_chat_text(item: ChatItem, *, show_tool_results: bool) -> str:

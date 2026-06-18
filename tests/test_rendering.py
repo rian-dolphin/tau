@@ -40,7 +40,7 @@ def test_transcript_renderer_streams_text_and_tool_events(
     captured = capsys.readouterr()
     assert renderer.finish() is True
     assert captured.out == "Hello\n"
-    assert "→ read {'path': 'a.py'}" in captured.err
+    assert "→ read a.py" in captured.err
     assert "… reading" in captured.err
     assert "✓ read" in captured.err
     assert "done" in captured.err

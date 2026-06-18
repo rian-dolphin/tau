@@ -116,7 +116,74 @@ class TuiState:
 
 def format_tool_call_block(tool_call: ToolCall) -> str:
     """Format a collapsed tool call for live and restored transcript blocks."""
-    return f"→ {tool_call.name} {tool_call.arguments}"
+    invocation = format_tool_call_invocation(tool_call)
+    if tool_call.name == "bash":
+        return invocation
+    return f"→ {invocation}"
+
+
+def format_tool_call_invocation(tool_call: ToolCall) -> str:
+    """Format a tool call as a terse human-readable invocation."""
+    arguments = tool_call.arguments
+    if tool_call.name == "read":
+        path = _string_argument(arguments, "path")
+        if path is None:
+            return _fallback_tool_call_invocation(tool_call)
+        return f"read {path}{_read_line_suffix(arguments)}"
+    if tool_call.name == "edit":
+        path = _string_argument(arguments, "path")
+        if path is None:
+            return _fallback_tool_call_invocation(tool_call)
+        return f"edit {path}"
+    if tool_call.name == "write":
+        path = _string_argument(arguments, "path")
+        if path is None:
+            return _fallback_tool_call_invocation(tool_call)
+        return f"write {path}"
+    if tool_call.name == "bash":
+        command = _string_argument(arguments, "command")
+        if command is None:
+            return _fallback_tool_call_invocation(tool_call)
+        timeout = _number_argument(arguments, "timeout")
+        suffix = f" (timeout {timeout:g}s)" if timeout is not None else ""
+        return f"$ {command}{suffix}"
+    return _fallback_tool_call_invocation(tool_call)
+
+
+def _read_line_suffix(arguments: dict[str, JSONValue]) -> str:
+    offset = _int_argument(arguments, "offset")
+    limit = _int_argument(arguments, "limit")
+    if offset is None and limit is None:
+        return ""
+    start = 1 if offset is None else max(1, offset)
+    if limit is None:
+        return f":{start}-"
+    return f":{start}-{start + max(1, limit) - 1}"
+
+
+def _fallback_tool_call_invocation(tool_call: ToolCall) -> str:
+    if tool_call.arguments:
+        return f"{tool_call.name} {tool_call.arguments}"
+    return tool_call.name
+
+
+def _string_argument(arguments: dict[str, JSONValue], key: str) -> str | None:
+    value = arguments.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _int_argument(arguments: dict[str, JSONValue], key: str) -> int | None:
+    value = arguments.get(key)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int) else None
+
+
+def _number_argument(arguments: dict[str, JSONValue], key: str) -> int | float | None:
+    value = arguments.get(key)
+    if isinstance(value, bool):
+        return None
+    return value if isinstance(value, int | float) else None
 
 
 def format_tool_result_summary(*, name: str, ok: bool) -> str:

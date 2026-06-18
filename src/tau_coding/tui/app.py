@@ -11,7 +11,7 @@ from textual.binding import Binding, BindingsMap
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Key, Resize
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, Label, ListItem, ListView, Static, TextArea
+from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Static, TextArea
 from textual.worker import Worker
 
 from tau_agent.messages import AgentMessage
@@ -371,6 +371,49 @@ class LoginProviderPickerScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class LoginMethodPickerScreen(ModalScreen[str | None]):
+    """Login method picker for the TUI login flow."""
+
+    BINDINGS: ClassVar[list[BindingEntry]] = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, *, theme: TuiTheme) -> None:
+        super().__init__()
+        self.theme = theme
+
+    def compose(self) -> ComposeResult:
+        """Compose the login method picker."""
+        with Vertical(id="login-method-picker"):
+            yield Static("Login", id="login-method-title")
+            yield Static("Choose how to authenticate.", id="login-method-intro")
+            with Vertical(id="login-method-actions"):
+                yield Button(
+                    "Subscription",
+                    id="login-method-subscription",
+                    variant="primary",
+                )
+                yield Static("Sign in with an OAuth account.", classes="login-method-description")
+                yield Button("API key", id="login-method-api-key")
+                yield Static("Save a provider API key.", classes="login-method-description")
+            yield Static("Enter selects - Escape closes", id="login-method-help")
+
+    def on_mount(self) -> None:
+        """Focus the default subscription method."""
+        self.query_one("#login-method-subscription", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Dismiss with the selected login method."""
+        if event.button.id == "login-method-subscription":
+            self.dismiss("subscription")
+        elif event.button.id == "login-method-api-key":
+            self.dismiss("api-key")
+
+    def action_cancel(self) -> None:
+        """Close without selecting a login method."""
+        self.dismiss(None)
+
+
 class ModelPickerScreen(ModalScreen[ModelChoice | None]):
     """Model picker for the active TUI provider."""
 
@@ -689,12 +732,12 @@ class TauTuiApp(App[None]):
     }
 
     #prompt {
+        height: auto;
         background: $tau-prompt-background;
         color: $tau-prompt-text;
         border: tall transparent;
         margin: 0 1 1 1;
         padding: 0 1;
-        min-height: 3;
         max-height: 8;
     }
 
@@ -793,6 +836,7 @@ class TauTuiApp(App[None]):
         align: center middle;
     }
 
+    #login-method-picker,
     #login-provider-picker,
     #model-picker {
         width: 76;
@@ -804,6 +848,7 @@ class TauTuiApp(App[None]):
         border: tall $tau-border;
     }
 
+    #login-method-title,
     #login-provider-title,
     #model-picker-title {
         height: 1;
@@ -820,6 +865,22 @@ class TauTuiApp(App[None]):
         border: tall $tau-border;
     }
 
+    #login-method-intro,
+    .login-method-description {
+        height: 1;
+        color: $tau-muted-text;
+    }
+
+    #login-method-actions {
+        height: auto;
+        margin-bottom: 1;
+    }
+
+    #login-method-actions Button {
+        width: 100%;
+        margin-top: 1;
+    }
+
     #model-picker-search {
         height: 3;
         margin-bottom: 1;
@@ -828,6 +889,7 @@ class TauTuiApp(App[None]):
         border: tall $tau-prompt-border;
     }
 
+    #login-method-help,
     #login-provider-help,
     #model-picker-help {
         height: 1;
@@ -1153,8 +1215,26 @@ class TauTuiApp(App[None]):
 
     def _open_login_picker(self) -> None:
         self.push_screen(
+            LoginMethodPickerScreen(theme=self.tui_settings.resolved_theme),
+            callback=self._handle_login_method_result,
+        )
+
+    def _handle_login_method_result(self, method: str | None) -> None:
+        if method is None:
+            return
+        if method == "subscription":
+            providers = _subscription_login_providers(BUILTIN_PROVIDER_CATALOG)
+        elif method == "api-key":
+            providers = _api_key_login_providers(BUILTIN_PROVIDER_CATALOG)
+        else:
+            self._notify(f"Unknown login method: {method}", severity="error")
+            return
+        if not providers:
+            self._notify("No login providers are available for that method.", severity="warning")
+            return
+        self.push_screen(
             LoginProviderPickerScreen(
-                BUILTIN_PROVIDER_CATALOG,
+                providers,
                 theme=self.tui_settings.resolved_theme,
             ),
             callback=self._handle_login_provider_result,
@@ -1374,6 +1454,18 @@ def _session_picker_label(record: SessionCompletionRecord) -> str:
 
 def _login_provider_label(provider: ProviderCatalogEntry) -> str:
     return f"{provider.display_name}\n  {provider.name}"
+
+
+def _subscription_login_providers(
+    providers: Sequence[ProviderCatalogEntry],
+) -> tuple[ProviderCatalogEntry, ...]:
+    return tuple(provider for provider in providers if provider.kind == "openai-codex")
+
+
+def _api_key_login_providers(
+    providers: Sequence[ProviderCatalogEntry],
+) -> tuple[ProviderCatalogEntry, ...]:
+    return tuple(provider for provider in providers if provider.kind != "openai-codex")
 
 
 def _model_picker_label(choice: ModelChoice, *, current_model: str, current_provider: str) -> str:

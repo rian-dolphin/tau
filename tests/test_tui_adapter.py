@@ -14,7 +14,7 @@ from tau_agent import (
     UserMessage,
 )
 from tau_coding.tui import TuiEventAdapter, TuiState
-from tau_coding.tui.state import format_tool_result_block
+from tau_coding.tui.state import format_tool_call_block, format_tool_result_block
 
 
 def test_tui_adapter_tracks_running_state() -> None:
@@ -71,6 +71,38 @@ def test_tui_adapter_flushes_assistant_buffer_before_tool_events() -> None:
     assert state.items[0].text == "Before tool"
     assert state.items[1].role == "tool"
     assert "→ read" in state.items[1].text
+
+
+def test_tool_call_blocks_use_human_readable_invocations() -> None:
+    assert (
+        format_tool_call_block(
+            ToolCall(
+                id="call-1",
+                name="read",
+                arguments={"path": "tests/test_tui_app.py", "offset": 1, "limit": 80},
+            )
+        )
+        == "→ read tests/test_tui_app.py:1-80"
+    )
+    assert (
+        format_tool_call_block(
+            ToolCall(id="call-2", name="edit", arguments={"path": "src/tau_coding/tui/app.py"})
+        )
+        == "→ edit src/tau_coding/tui/app.py"
+    )
+    assert (
+        format_tool_call_block(
+            ToolCall(
+                id="call-3",
+                name="bash",
+                arguments={
+                    "command": "git log --oneline --decorate --graph --max-count=8",
+                    "timeout": 30,
+                },
+            )
+        )
+        == "$ git log --oneline --decorate --graph --max-count=8 (timeout 30s)"
+    )
 
 
 def test_tui_adapter_records_tool_updates_and_results() -> None:

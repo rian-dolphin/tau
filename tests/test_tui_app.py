@@ -7,7 +7,7 @@ from rich import box
 from rich.console import Console
 from rich.panel import Panel
 from textual.containers import VerticalScroll
-from textual.widgets import Input, Label, ListView, TextArea
+from textual.widgets import Button, Input, Label, ListView, TextArea
 
 from tau_agent import (
     AgentEndEvent,
@@ -33,6 +33,7 @@ from tau_coding.tools import create_coding_tools
 from tau_coding.tui import app as tui_app
 from tau_coding.tui.app import (
     CommandOutputScreen,
+    LoginMethodPickerScreen,
     LoginProviderPickerScreen,
     LoginScreen,
     ModelPickerScreen,
@@ -287,7 +288,7 @@ def test_chat_items_render_fenced_code_without_markers() -> None:
 def test_tool_chat_items_hide_and_show_result_text() -> None:
     item = ChatItem(
         role="tool",
-        text="→ read {'path': 'README.md'}",
+        text="→ read README.md",
         tool_result_text="✓ read\nfull file contents",
     )
 
@@ -303,6 +304,25 @@ def test_tool_chat_items_hide_and_show_result_text() -> None:
     assert "full file contents" not in collapsed
     assert "→ read" in expanded
     assert "full file contents" in expanded
+
+
+def test_tool_chat_items_color_success_and_error_status() -> None:
+    success_console = Console(record=True, width=80)
+    success_console.print(
+        render_chat_item(
+            ChatItem(role="tool", text="→ read README.md", tool_result_text="✓ read\ncontents")
+        )
+    )
+    success_output = success_console.export_text(styles=True)
+
+    error_console = Console(record=True, width=80)
+    error_console.print(
+        render_chat_item(ChatItem(role="tool", text="$ false", tool_result_text="✗ bash\nfailed"))
+    )
+    error_output = error_console.export_text(styles=True)
+
+    assert "38;2;156;255;177" in success_output
+    assert "38;2;255;79;79" in error_output
 
 
 def test_assistant_chat_items_render_markdown_lists() -> None:
@@ -369,6 +389,24 @@ async def test_tui_app_mounts_sidebar_and_transcript() -> None:
         prompt = app.query_one("#prompt")
         assert isinstance(prompt, TextArea)
         assert prompt.soft_wrap is True
+
+
+@pytest.mark.anyio
+async def test_tui_prompt_grows_to_six_lines_then_scrolls() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        prompt = app.query_one("#prompt", TextArea)
+        assert prompt.size.height == 1
+
+        prompt.text = "x" * 500
+        await pilot.pause()
+        assert prompt.size.height == 6
+
+        prompt.text = "x" * 1000
+        await pilot.pause()
+        assert prompt.size.height == 6
+        assert prompt.max_scroll_y > 0
 
 
 @pytest.mark.anyio
@@ -480,6 +518,15 @@ def test_tui_app_uses_configured_theme_css_variables() -> None:
     assert variables["tau-prompt-border"] == "#00ff66"
 
 
+def test_tau_dark_theme_uses_black_chat_backgrounds() -> None:
+    theme = TuiSettings().resolved_theme
+
+    assert theme.screen_background == "#000000"
+    assert theme.transcript_background == "#000000"
+    assert theme.role_styles["user"].body.endswith("on #000000")
+    assert theme.role_styles["assistant"].body.endswith("on #000000")
+
+
 def test_tui_app_loads_restored_messages_into_display_state() -> None:
     app = TauTuiApp(
         FakeSession(
@@ -507,7 +554,7 @@ def test_tui_app_loads_restored_messages_into_display_state() -> None:
         ("assistant", "I'll inspect it.", None),
         (
             "tool",
-            "→ edit {'path': 'README.md'}",
+            "→ edit README.md",
             "✓ edit\n"
             "Successfully replaced 1 block.\n"
             "\n"
@@ -967,7 +1014,7 @@ async def test_tui_login_openai_codex_saves_oauth_credentials(
 
 
 @pytest.mark.anyio
-async def test_tui_login_opens_provider_picker() -> None:
+async def test_tui_login_opens_method_picker() -> None:
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
@@ -976,14 +1023,54 @@ async def test_tui_login_opens_provider_picker() -> None:
         await pilot.press("enter")
         await pilot.pause()
 
+        assert isinstance(app.screen, LoginMethodPickerScreen)
+        assert str(app.screen.query_one("#login-method-subscription", Button).label) == (
+            "Subscription"
+        )
+        assert str(app.screen.query_one("#login-method-api-key", Button).label) == "API key"
+
+
+@pytest.mark.anyio
+async def test_tui_login_subscription_opens_oauth_provider_picker() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/login"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, LoginMethodPickerScreen)
+        await pilot.click("#login-method-subscription")
+        await pilot.pause()
+
+        assert isinstance(app.screen, LoginProviderPickerScreen)
+        provider_list = app.screen.query_one("#login-provider-list", ListView)
+        labels = [str(item.query_one(Label).render()) for item in provider_list.children]
+        assert labels == ["OpenAI Codex subscription\n  openai-codex"]
+        assert "gpt-5.5" not in "\n".join(labels)
+
+
+@pytest.mark.anyio
+async def test_tui_login_api_key_opens_api_provider_picker() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/login"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, LoginMethodPickerScreen)
+        await pilot.click("#login-method-api-key")
+        await pilot.pause()
+
         assert isinstance(app.screen, LoginProviderPickerScreen)
         provider_list = app.screen.query_one("#login-provider-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in provider_list.children]
         assert labels[0] == "OpenAI\n  openai"
-        assert labels[1] == "OpenAI Codex subscription\n  openai-codex"
-        assert "gpt-5.5" not in "\n".join(labels)
+        assert "OpenAI Codex subscription\n  openai-codex" not in labels
 
-        await pilot.press("down")
         await pilot.press("down")
         await pilot.press("enter")
         await pilot.pause()
@@ -1152,9 +1239,7 @@ async def test_tui_prompt_worker_shows_diagnostic_log_path_on_failure(tmp_path: 
 
     await app._run_prompt("break")
 
-    assert app.state.error == (
-        f"Error: EmptyMessageError\nLog: {session.last_diagnostic_log_path}"
-    )
+    assert app.state.error == (f"Error: EmptyMessageError\nLog: {session.last_diagnostic_log_path}")
     assert app.state.items[-1].role == "error"
     assert app.state.items[-1].text == app.state.error
     assert app.state.running is False
@@ -1201,7 +1286,7 @@ async def test_tui_prompt_worker_refreshes_context_after_message_changes() -> No
     assert [(item.role, item.text, item.tool_result_text) for item in app.state.items] == [
         ("user", "read README", None),
         ("assistant", "Using a tool.", None),
-        ("tool", "→ read {'path': 'README.md'}", "✓ read\ncontents"),
+        ("tool", "→ read README.md", "✓ read\ncontents"),
     ]
 
 
