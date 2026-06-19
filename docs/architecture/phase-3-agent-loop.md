@@ -23,6 +23,9 @@ Phase 3 added:
 - provider-error handling
 - optional max-turn protection
 
+Later hardening added queue-drain hooks for steering/follow-up prompts and
+provider-neutral forwarding for retry and thinking/reasoning progress events.
+
 ## The loop's inputs
 
 `run_agent_loop()` receives:
@@ -34,6 +37,8 @@ Phase 3 added:
 - a list of registered `AgentTool` objects
 - an optional maximum turn count
 - an optional cancellation token
+- optional steering/follow-up queue drain callbacks
+- an optional queue-state callback for `QueueUpdateEvent`
 
 Conceptually:
 
@@ -133,6 +138,31 @@ ProviderErrorEvent          -> ErrorEvent
 
 This means UI layers can listen to agent events without knowing about provider internals.
 
+Later provider adapters also translate:
+
+```text
+ProviderRetryEvent         -> RetryEvent
+ProviderThinkingDeltaEvent -> ThinkingDeltaEvent
+```
+
+The loop forwards those events without embedding provider-specific payloads in
+the portable agent layer.
+
+## Queued steering and follow-ups
+
+`AgentHarness` owns prompt queues, but `run_agent_loop()` owns the injection
+point. When queue callbacks are provided:
+
+- steering messages drain after the current assistant turn and any tool batch
+- follow-up messages drain when the run would otherwise stop
+- drained messages are appended to the transcript as normal user messages
+- the loop emits `MessageStartEvent(message_role="user")` and `MessageEndEvent`
+  for each injected user message before the next provider call
+- the loop emits a `QueueUpdateEvent` after draining so frontends can update
+  pending-message status
+
+Direct callers that do not pass queue callbacks keep the original behavior.
+
 ## Error handling
 
 The loop currently handles common failure cases explicitly.
@@ -173,29 +203,36 @@ That means:
 tau_agent.loop:
   knows how to execute an AgentTool
 
-future tau_coding tools:
+tau_coding tools:
   know how to read files, write files, edit files, or run bash
 ```
 
 This keeps Tau's reusable agent package independent from coding-agent-specific behavior.
 
-## How Phase 3 supports later phases
+## How Phase 3 supports the later layers
 
-### Phase 4: AgentHarness
+### AgentHarness
 
-The harness will own the transcript and call `run_agent_loop()` from methods like `prompt()` and `continue_()`.
+The harness owns the transcript, cancellation token, listeners, and queued
+steering/follow-up prompts. It calls `run_agent_loop()` from methods like
+`prompt()` and `continue_()`.
 
-### Phase 5: built-in coding tools
+### Built-in coding tools
 
-The coding tools will become `AgentTool` instances. The loop can already execute them once they exist.
+The coding tools are `AgentTool` instances. The loop executes them without
+knowing whether a tool reads files, writes files, edits files, or runs a shell
+command.
 
-### Phase 6: print-mode CLI
+### Print-mode CLI and TUI
 
-The CLI will consume `AgentEvent`s from the loop and print streamed text and tool summaries.
+Renderers and the Textual TUI consume `AgentEvent`s from the loop and decide how
+to display streamed text, tool activity, retry status, thinking deltas, queue
+state, and errors.
 
-### Phase 7: sessions
+### Sessions
 
-Session storage will persist the transcript messages that the loop appends.
+Session storage persists the transcript messages that the loop appends, including
+tool results and queued user prompts after they are injected.
 
 ## Design rule
 

@@ -25,4 +25,9 @@ async for event in run_agent_loop(
 
 The loop is intentionally independent of the CLI, Rich, Textual, and session file locations.
 
+The current loop also accepts optional queue-drain hooks from `AgentHarness`.
+Those hooks let the loop inject steering messages after a turn/tool batch and
+follow-up messages when a run would otherwise stop, while still emitting normal
+user message events and mutating the same transcript list.
+
 For a detailed architecture walkthrough, read [Phase 3: Pure Agent Loop](architecture/phase-3-agent-loop.md).

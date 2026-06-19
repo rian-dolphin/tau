@@ -85,6 +85,24 @@ The sidebar is now responsive. It remains visible on medium or larger terminal
 windows, but hides automatically when the terminal is narrow or short so the
 conversation and prompt keep enough room to breathe. The visibility rule lives
 in the Textual frontend; session metadata and agent state are unchanged.
+When visible, the sidebar includes loaded context files so project instructions
+such as `AGENTS.md` are inspectable without opening a separate command modal.
+
+Transcript text can now be selected through Textual's selection APIs. Message
+selection is also available with `Alt-Up` and `Alt-Down`, and `Ctrl-C` copies
+the selected message text through Textual's terminal clipboard integration.
+This gives users a keyboard path for copying user, assistant, tool, status, and
+error blocks without making selection part of the durable transcript model.
+
+The status line now shows a small animated activity indicator while a run is
+active and resets to `Ready` when the run completes, is cancelled, or fails. It
+also shows pending steering/follow-up queue counts while queued prompts are
+waiting to be injected.
+
+Thinking controls now include two distinct TUI behaviors: `Shift-Tab` cycles the
+active thinking mode when the current provider/model supports it, while `Ctrl-T`
+toggles display of streamed thinking tokens. Thinking-token transcript blocks
+are hidden by default and rendered with their own role style when shown.
 
 The frontend boundary is now documented in [Building a Custom TUI](../custom-tui.md).
 That guide describes how another terminal UI can consume `CodingSession`,

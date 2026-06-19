@@ -212,11 +212,12 @@ The core loop does not need `print()`, Rich panels, or Textual widgets.
 
 ### Phase 2: provider layer
 
-Providers will translate external model streams into Tau messages, tool calls, and provider-neutral events.
+Providers translate external model streams into Tau messages, tool calls, and
+provider-neutral events.
 
 ### Phase 3: pure agent loop
 
-The loop will use these types to:
+The loop uses these types to:
 
 1. send messages to a provider
 2. collect assistant output
@@ -227,15 +228,18 @@ The loop will use these types to:
 
 ### Phase 4: harness
 
-The harness will maintain a transcript of `AgentMessage` objects and expose higher-level methods like `prompt()` and `continue_()`.
+The harness maintains a transcript of `AgentMessage` objects and exposes
+higher-level methods like `prompt()` and `continue_()`.
 
 ### Phase 6 and beyond: UI
 
-Print mode, Rich rendering, and Textual will consume `AgentEvent`s rather than reaching into the loop internals.
+Print mode, Rich rendering, JSON event streaming, and Textual consume
+`AgentEvent`s rather than reaching into loop, provider, or harness internals.
 
 ### Phase 7: sessions
 
-Session persistence will save and replay message objects and related state changes. The current message models give that persistence layer a stable base.
+Session persistence saves and replays message objects and related state changes.
+The message models give that persistence layer a stable base.
 
 ## Design rule
 

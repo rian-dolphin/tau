@@ -31,13 +31,22 @@ Tau currently has:
 - provider-neutral message, tool, result, and event models
 - a provider-neutral model streaming interface
 - deterministic fake model provider for tests
-- OpenAI-compatible streaming provider
-- a pure agent loop that streams events, executes tools, and grows the transcript
-- a reusable `AgentHarness` that owns transcript state and streams events
+- OpenAI-compatible, Anthropic, and OpenAI Codex subscription provider adapters
+- provider retry events with configurable retry/backoff behavior
+- provider-neutral thinking/reasoning delta events
+- a pure agent loop that streams events, executes tools, drains queued prompts,
+  and grows the transcript
+- a reusable `AgentHarness` that owns transcript state, cancellation, and
+  steering/follow-up queues
 - append-only home-directory sessions
 - skills, prompt templates, and project instruction discovery
 - slash commands with TUI autocomplete
 - provider setup and switching
+- stored Tau credentials with environment-variable fallback
+- context accounting, manual/automatic compaction, and HTML session export
+- a Textual TUI with responsive sidebar, text selection, selected-message copy,
+  activity status, thinking controls, optional thinking-token display, and
+  queued steering/follow-up prompts while the agent is running
 - beginner-friendly design documentation
 
 ## Where to start
@@ -52,3 +61,5 @@ Tau currently has:
 - Want to understand the execution engine? Read [Agent Loop](agent-loop.md).
 - Want the reusable stateful brain? Read [Agent Harness](harness.md).
 - Want to build another frontend? Read [Building a Custom TUI](custom-tui.md).
+- Want a summary of the completed pre-extension hardening work? Read
+  [Pre-extension Hardening Summary](architecture/pre-extension-hardening.md).

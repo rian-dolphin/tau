@@ -11,6 +11,19 @@ tau_agent    portable agent harness, loop, tools, events, sessions
 tau_coding   CLI app, resources, skills, extensions, commands, UI integration
 ```
 
+## Current status
+
+Phases 0 through 20.4, 22, and 23 are implemented and documented. Phase 21
+extensions are intentionally deferred so the core harness, coding session, and
+TUI can stay stable before extension loading is introduced.
+
+The latest pre-extension hardening pass added context accounting refreshes,
+thinking-mode controls, optional thinking-token display, provider retries,
+credential precedence, skill invocation reliability, session export, transcript
+selection/copy, activity status, and Pi-style queued steering/follow-up prompts.
+See [Pre-extension Hardening Summary](architecture/pre-extension-hardening.md)
+for the current behavior and verification coverage.
+
 ## Phase plan
 
 0. Project foundation and design docs.
@@ -34,7 +47,11 @@ tau_coding   CLI app, resources, skills, extensions, commands, UI integration
 18. Provider configuration and setup.
 19. Project context discovery and reload.
 20. Packaging and installation polish.
-21. Extensions.
+20.1. Accurate context accounting and sidebar refresh.
+20.2. Thinking mode controls.
+20.3. Skill invocation reliability.
+20.4. Session visualization and export.
+21. Extensions. Deferred.
 22. Compaction and context management.
 23. Advanced TUI and product polish.
 

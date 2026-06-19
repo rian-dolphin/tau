@@ -7,8 +7,8 @@ from inspect import isawaitable
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, cast
 
-from rich.text import Text
 from rich.console import Group
+from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingsMap
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -110,6 +110,8 @@ class CompletionActionTarget(Protocol):
     def action_completion_next(self) -> None: ...
 
     def action_completion_previous(self) -> None: ...
+
+    def action_cancel(self) -> None: ...
 
     def action_open_command_palette(self) -> None: ...
 

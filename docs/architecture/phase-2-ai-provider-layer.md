@@ -155,15 +155,21 @@ Keeping this boundary clean makes it possible to reuse the same provider layer f
 
 ### Phase 3: pure agent loop
 
-The loop will consume `ProviderEvent`s, convert them into higher-level `AgentEvent`s, execute tools, and decide whether another model turn is needed.
+The loop consumes `ProviderEvent`s, converts them into higher-level
+`AgentEvent`s, executes tools, and decides whether another model turn is needed.
+Later provider hardening added retry and thinking-delta events to that same
+conversion path without giving providers any knowledge of the CLI or TUI.
 
 ### Phase 4: harness
 
-The harness will own a provider instance and pass the current transcript into `stream_response()`.
+The harness owns a provider instance, passes the current transcript into
+`stream_response()`, and exposes prompt/continue APIs that can be used by print
+mode, JSON event streaming, Rich rendering, and Textual.
 
 ### Phase 6: print-mode CLI
 
-The CLI will choose a provider/model from configuration or command-line flags, then display streamed output as it arrives.
+The CLI chooses a provider/model from configuration or command-line flags, then
+displays streamed output as it arrives.
 
 ### Future providers
 
