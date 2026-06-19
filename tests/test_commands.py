@@ -126,6 +126,17 @@ def test_model_command_requests_picker_and_switches_models(tmp_path: Path) -> No
     assert session.model == "other-model"
 
 
+def test_scoped_models_command_requests_scoped_picker(tmp_path: Path) -> None:
+    session = FakeSession(tmp_path)
+    registry = create_default_command_registry()
+
+    dashed_result = registry.execute(session, "/scoped-models")
+    pi_style_result = registry.execute(session, "/scoped models")
+
+    assert dashed_result.scoped_models_picker_requested is True
+    assert pi_style_result.scoped_models_picker_requested is True
+
+
 def test_model_command_rejects_unknown_model(tmp_path: Path) -> None:
     session = FakeSession(tmp_path)
 

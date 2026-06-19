@@ -772,7 +772,6 @@ class ModelPickerSearchInput(Input):
         Binding("escape", "cancel", "Cancel", show=False, priority=True),
         Binding("tab", "toggle_mode", "Mode", show=False, priority=True),
         Binding("ctrl+i", "toggle_mode", "Mode", show=False, priority=True),
-        Binding("space", "toggle_scoped", "Scope", show=False, priority=True),
         Binding("up", "cursor_up", "Up", show=False, priority=True),
         Binding("down", "cursor_down", "Down", show=False, priority=True),
     ]
@@ -794,10 +793,6 @@ class ModelPickerSearchInput(Input):
             event.stop()
             event.prevent_default()
             self.action_toggle_mode()
-        elif event.key == "space":
-            event.stop()
-            event.prevent_default()
-            self.action_toggle_scoped()
         elif event.key == "escape":
             event.stop()
             event.prevent_default()
@@ -815,10 +810,6 @@ class ModelPickerSearchInput(Input):
         """Toggle between all and scoped picker modes."""
         self._picker().action_toggle_mode()
 
-    def action_toggle_scoped(self) -> None:
-        """Toggle the highlighted model in the scoped list."""
-        self._picker().action_toggle_scoped()
-
     def action_cancel(self) -> None:
         """Close the model picker."""
         self._picker().action_cancel()
@@ -831,7 +822,6 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         Binding("escape", "cancel", "Cancel"),
         Binding("tab", "toggle_mode", "Mode", show=False, priority=True),
         Binding("ctrl+i", "toggle_mode", "Mode", show=False, priority=True),
-        Binding("space", "toggle_scoped", "Scope", show=False),
         Binding("up", "cursor_up", "Up", show=False),
         Binding("down", "cursor_down", "Down", show=False),
         Binding("enter", "accept_model", "Select", show=False),
@@ -845,7 +835,8 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         current_model: str,
         provider_name: str,
         theme: TuiTheme,
-        on_toggle_scoped: Callable[[ModelChoice], Sequence[ModelChoice]],
+        on_toggle_scoped: Callable[[ModelChoice], Sequence[ModelChoice]] | None = None,
+        picker_kind: Literal["model", "scoped"] = "model",
     ) -> None:
         super().__init__()
         self.choices = tuple(dict.fromkeys(choices))
@@ -855,13 +846,20 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         self.provider_name = provider_name
         self.theme = theme
         self.on_toggle_scoped = on_toggle_scoped
+        self.picker_kind = picker_kind
         self.mode: Literal["all", "scoped"] = "all"
         self.search_value = ""
 
     def compose(self) -> ComposeResult:
         """Compose the model picker."""
         with Vertical(id="model-picker"):
-            yield Static(f"Model: {self.provider_name}", id="model-picker-title")
+            title = (
+                f"Model: {self.provider_name}"
+                if self.picker_kind == "model"
+                else "Scoped models"
+            )
+            yield Static(title, id="model-picker-title")
+            yield Static("", id="model-picker-tabs")
             yield ModelPickerSearchInput(placeholder="Search models", id="model-picker-search")
             yield ListView(
                 *[
@@ -930,13 +928,11 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         elif event.key in {"tab", "ctrl+i"}:
             event.stop()
             self.action_toggle_mode()
-        elif event.key == "space":
-            event.stop()
-            self.action_toggle_scoped()
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
-        """Dismiss with the selected model name."""
-        self.dismiss(self.visible_choices[event.index])
+        """Handle the selected row."""
+        event.stop()
+        self._select_visible_choice()
 
     def action_cursor_up(self) -> None:
         """Move to the previous model."""
@@ -952,12 +948,14 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
 
     def action_toggle_mode(self) -> None:
         """Toggle between all models and scoped models."""
+        if self.picker_kind != "model":
+            return
         self.mode = "scoped" if self.mode == "all" else "all"
         self._refresh_model_list()
 
     def action_toggle_scoped(self) -> None:
         """Add or remove the highlighted model from scoped models."""
-        if not self.visible_choices:
+        if self.on_toggle_scoped is None or not self.visible_choices:
             return
         model_list = self.query_one("#model-picker-list", ListView)
         index = model_list.index
@@ -978,7 +976,11 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         index = model_list.index
         if index is None:
             return
-        self.dismiss(self.visible_choices[index])
+        choice = self.visible_choices[index]
+        if self.picker_kind == "scoped":
+            self.action_toggle_scoped()
+            return
+        self.dismiss(choice)
 
     def _refresh_model_list(self) -> None:
         base_choices = self.scoped_choices if self.mode == "scoped" else self.choices
@@ -1003,12 +1005,27 @@ class ModelPickerScreen(ModalScreen[ModelChoice | None]):
         )
         self._reset_model_list_index()
         scope_count = len(self.scoped_choices)
-        if not self.visible_choices:
-            help_text = f"{self.mode}: no matching models - Tab switches mode"
-        else:
+        tabs = self.query_one("#model-picker-tabs", Static)
+        if self.picker_kind == "scoped":
+            tabs.update("Scoped models setup — Enter toggles membership; active model is unchanged")
             help_text = (
-                f"{self.mode} models - Enter selects - Space scopes - "
-                f"Tab switches mode - {scope_count} scoped"
+                "No matching models - Enter toggles scoped model"
+                if not self.visible_choices
+                else f"Enter toggles scoped model - {scope_count} scoped"
+            )
+        elif self.mode == "all":
+            tabs.update("Tabs: ● All models  ○ Scoped models")
+            help_text = (
+                "all models: no matching models - Tab switches to scoped models"
+                if not self.visible_choices
+                else f"All models - Enter selects active model - Tab switches tabs - {scope_count} scoped"
+            )
+        else:
+            tabs.update("Tabs: ○ All models  ● Scoped models")
+            help_text = (
+                "scoped models: no matching models - Tab switches to all models"
+                if not self.visible_choices
+                else "Scoped models - Enter selects active model - Tab switches tabs"
             )
         self.query_one("#model-picker-help", Static).update(help_text)
 
@@ -1367,6 +1384,12 @@ class TauTuiApp(App[None]):
         margin-bottom: 1;
     }
 
+    #model-picker-tabs {
+        height: 1;
+        color: $tau-muted-text;
+        margin-bottom: 1;
+    }
+
     #login-method-list,
     #login-provider-list,
     #theme-picker-list,
@@ -1605,6 +1628,8 @@ class TauTuiApp(App[None]):
                 self._open_login(command.login_provider)
             if command.model_picker_requested:
                 self._open_model_picker()
+            if command.scoped_models_picker_requested:
+                self._open_scoped_models_picker()
             if command.theme_picker_requested:
                 self._open_theme_picker()
             if command.thinking_level is not None:
@@ -1990,18 +2015,42 @@ class TauTuiApp(App[None]):
         self._notify(f"Saved login for {entry.display_name}.")
         self._refresh()
 
-    def _open_model_picker(self) -> None:
+    def _available_model_choices(self) -> tuple[ModelChoice, ...]:
         fallback_choices = (
             ModelChoice(provider_name=self.session.provider_name, model=model)
             for model in self.session.available_models
         )
-        choices = tuple(
+        return tuple(
             getattr(
                 self.session,
                 "available_model_choices",
                 fallback_choices,
             )
         )
+
+    def _open_model_picker(self) -> None:
+        choices = self._available_model_choices()
+        if not choices:
+            self._notify(
+                "No configured providers are usable. Run /login to set up a provider.",
+                severity="warning",
+            )
+            return
+        self.push_screen(
+            ModelPickerScreen(
+                choices,
+                scoped_choices=tuple(getattr(self.session, "scoped_model_choices", ())),
+                current_model=self.session.model,
+                provider_name=self.session.provider_name,
+                theme=self.tui_settings.resolved_theme,
+                on_toggle_scoped=None,
+                picker_kind="model",
+            ),
+            callback=self._handle_model_picker_result,
+        )
+
+    def _open_scoped_models_picker(self) -> None:
+        choices = self._available_model_choices()
         if not choices:
             self._notify(
                 "No configured providers are usable. Run /login to set up a provider.",
@@ -2016,8 +2065,9 @@ class TauTuiApp(App[None]):
                 provider_name=self.session.provider_name,
                 theme=self.tui_settings.resolved_theme,
                 on_toggle_scoped=self._toggle_scoped_model,
+                picker_kind="scoped",
             ),
-            callback=self._handle_model_picker_result,
+            callback=self._handle_scoped_models_picker_result,
         )
 
     def _toggle_scoped_model(self, choice: ModelChoice) -> Sequence[ModelChoice]:
@@ -2030,6 +2080,10 @@ class TauTuiApp(App[None]):
         except Exception as exc:  # noqa: BLE001 - surface session state failures in the TUI
             self._notify(f"Could not update scoped models: {exc}", severity="error")
             return tuple(getattr(self.session, "scoped_model_choices", ()))
+
+    def _handle_scoped_models_picker_result(self, choice: ModelChoice | None) -> None:
+        del choice
+        self._refresh()
 
     def _handle_model_picker_result(self, choice: ModelChoice | None) -> None:
         if choice is None:

@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 from rich.panel import Panel
 from textual.containers import VerticalScroll
-from textual.widgets import Footer, Input, Label, ListItem, ListView, TextArea
+from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
 from tau_agent import (
     AgentEndEvent,
@@ -128,6 +128,8 @@ class FakeSession:
             return CommandResult(handled=True, login_provider=text.removeprefix("/login "))
         if text == "/model":
             return CommandResult(handled=True, model_picker_requested=True)
+        if text in {"/scoped-models", "/scoped models"}:
+            return CommandResult(handled=True, scoped_models_picker_requested=True)
         if text.startswith("/thinking "):
             return CommandResult(handled=True, thinking_level=text.removeprefix("/thinking "))
         if text == "/theme":
@@ -1915,6 +1917,8 @@ async def test_tui_model_opens_interactive_picker() -> None:
         await pilot.pause()
 
         assert isinstance(app.screen, ModelPickerScreen)
+        tabs = app.screen.query_one("#model-picker-tabs", Static)
+        assert str(tabs.render()) == "Tabs: ● All models  ○ Scoped models"
         model_list = app.screen.query_one("#model-picker-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in model_list.children]
         assert labels == [
@@ -1931,6 +1935,12 @@ async def test_tui_model_opens_interactive_picker() -> None:
         labels = [str(item.query_one(Label).render()) for item in model_list.children]
         assert labels == ["  local:local-model"]
 
+        await pilot.press("tab")
+        await pilot.pause()
+        assert str(tabs.render()) == "Tabs: ○ All models  ● Scoped models"
+
+        await pilot.press("tab")
+        await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
 
@@ -1940,32 +1950,39 @@ async def test_tui_model_opens_interactive_picker() -> None:
 
 
 @pytest.mark.anyio
-async def test_tui_model_picker_toggles_scoped_models() -> None:
+async def test_tui_scoped_models_picker_toggles_scoped_models_without_switching_model() -> None:
     session = FakeSession()
     app = TauTuiApp(session)
 
     async with app.run_test() as pilot:
         prompt = app.query_one("#prompt")
-        prompt.value = "/model"
+        prompt.value = "/scoped-models"
         await pilot.press("enter")
         await pilot.pause()
 
         assert isinstance(app.screen, ModelPickerScreen)
-        await pilot.press("space")
+        tabs = app.screen.query_one("#model-picker-tabs", Static)
+        assert str(tabs.render()) == (
+            "Scoped models setup — Enter toggles membership; active model is unchanged"
+        )
+        await pilot.press("enter")
         await pilot.pause()
 
         assert session.scoped_model_choices == (
             ModelChoice(provider_name="openai", model="fake-model"),
         )
+        assert session.provider_name == "openai"
+        assert session.model == "fake-model"
         model_list = app.screen.query_one("#model-picker-list", ListView)
         labels = [str(item.query_one(Label).render()) for item in model_list.children]
         assert labels[0] == "* openai:fake-model [scoped]"
 
-        await pilot.press("tab")
+        await pilot.press("enter")
         await pilot.pause()
 
-        labels = [str(item.query_one(Label).render()) for item in model_list.children]
-        assert labels == ["* openai:fake-model [scoped]"]
+        assert session.scoped_model_choices == ()
+        assert session.provider_name == "openai"
+        assert session.model == "fake-model"
 
 
 @pytest.mark.anyio
