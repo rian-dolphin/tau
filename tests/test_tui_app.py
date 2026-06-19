@@ -336,7 +336,8 @@ def test_compact_session_info_renders_sidebar_facts() -> None:
     output = console.export_text()
     assert "/workspace/project (--)" in output
     assert "12k/200k context" in output
-    assert "openai:fake-model" in output
+    assert "fake-model" in output
+    assert "openai:fake-model" not in output
     assert "(medium)" in output
 
 
