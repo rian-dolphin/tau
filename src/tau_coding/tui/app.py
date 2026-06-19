@@ -232,7 +232,13 @@ class PromptInput(TextArea):
         self._completion_target().action_select_next_message()
 
     def action_copy_selected_message(self) -> None:
-        """Copy the selected transcript message."""
+        """Clear the current prompt before falling back to message copy."""
+        if self.selected_text:
+            return
+        if self.text:
+            self.text = ""
+            self.move_cursor((0, 0))
+            return
         self._completion_target().action_copy_selected_message()
 
     async def action_submit_follow_up(self) -> None:
@@ -297,7 +303,12 @@ class PromptInput(TextArea):
             if self.selected_text:
                 return
             event.stop()
-            self._completion_target().action_copy_selected_message()
+            event.prevent_default()
+            if self.text:
+                self.text = ""
+                self.move_cursor((0, 0))
+            else:
+                self._completion_target().action_copy_selected_message()
         elif event.key == keybindings.completion_next:
             event.stop()
             if self._has_completion_options():

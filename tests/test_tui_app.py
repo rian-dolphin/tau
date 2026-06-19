@@ -1857,6 +1857,38 @@ async def test_tui_app_copies_visible_transcript_selection_first() -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_prompt_ctrl_c_clears_text_before_copying_message() -> None:
+    app = TauTuiApp(FakeSession(messages=(UserMessage(content="User prompt"),)))
+    copied: list[str] = []
+    notifications: list[str] = []
+
+    def fake_copy(text: str) -> None:
+        copied.append(text)
+
+    def fake_notify(message: str, **kwargs: object) -> None:
+        del kwargs
+        notifications.append(message)
+
+    app.copy_to_clipboard = fake_copy  # type: ignore[method-assign]
+    app._notify = fake_notify  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt", TextArea)
+        prompt.focus()
+        prompt.text = "discard this prompt"
+        await pilot.pause()
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+        assert prompt.text == ""
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+    assert copied == []
+    assert notifications == ["Select a transcript message first."]
+
+
+@pytest.mark.anyio
 async def test_tui_app_copy_selected_message_reports_failures() -> None:
     app = TauTuiApp(FakeSession(messages=(UserMessage(content="User prompt"),)))
     notifications: list[tuple[str, str | None]] = []
