@@ -90,6 +90,7 @@ class CommandResult:
     login_picker_requested: bool = False
     login_provider: str | None = None
     model_picker_requested: bool = False
+    scoped_models_picker_requested: bool = False
     theme_picker_requested: bool = False
     thinking_level: str | None = None
     theme: str | None = None
@@ -165,6 +166,10 @@ class CommandRegistry:
             return CommandResult(handled=False)
 
         command = self.get(name)
+        if command is None and name == "scoped" and args.lower() == "models":
+            command = self.get("scoped-models")
+            name = "scoped-models"
+            args = ""
         if command is None:
             return CommandResult(handled=True, message=f"Unknown command: /{name}")
 
@@ -259,6 +264,15 @@ def create_default_command_registry() -> CommandRegistry:
             usage="/model",
             description="Choose the active model.",
             handler=_model_command,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            name="scoped-models",
+            usage="/scoped-models",
+            description="Choose models available to quick-cycle with Ctrl+P.",
+            handler=_scoped_models_command,
+            search_terms=("scope", "quick", "cycle", "ctrl+p"),
         )
     )
     registry.register(
@@ -519,6 +533,12 @@ def _model_command(context: CommandContext) -> CommandResult:
         return CommandResult(handled=True, message=f"Current model: {model}")
 
     return CommandResult(handled=True, model_picker_requested=True)
+
+
+def _scoped_models_command(context: CommandContext) -> CommandResult:
+    if context.args:
+        return CommandResult(handled=True, message="Usage: /scoped-models")
+    return CommandResult(handled=True, scoped_models_picker_requested=True)
 
 
 def _thinking_command(context: CommandContext) -> CommandResult:

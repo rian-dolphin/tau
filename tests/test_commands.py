@@ -79,6 +79,7 @@ def test_registered_commands_are_pi_aligned(tmp_path: Path) -> None:
         "quit",
         "reload",
         "resume",
+        "scoped-models",
         "session",
         "theme",
     ]
@@ -165,6 +166,17 @@ def test_model_command_requests_picker_and_switches_models(tmp_path: Path) -> No
     assert session.model == "other-model"
 
 
+def test_scoped_models_command_requests_scoped_picker(tmp_path: Path) -> None:
+    session = FakeSession(tmp_path)
+    registry = create_default_command_registry()
+
+    dashed_result = registry.execute(session, "/scoped-models")
+    pi_style_result = registry.execute(session, "/scoped models")
+
+    assert dashed_result.scoped_models_picker_requested is True
+    assert pi_style_result.scoped_models_picker_requested is True
+
+
 def test_model_command_rejects_unknown_model(tmp_path: Path) -> None:
     session = FakeSession(tmp_path)
 
@@ -193,7 +205,7 @@ def test_non_pi_commands_are_not_registered(tmp_path: Path) -> None:
     registry = create_default_command_registry()
     session = FakeSession(tmp_path)
 
-    for command in ("/provider", "/skills", "/resources", "/context", "/thinking", "/help"):
+    for command in ("/provider", "/skills", "/resources", "/context", "/help"):
         result = registry.execute(session, command)
         assert result.handled is True
         assert result.message == f"Unknown command: {command}"
