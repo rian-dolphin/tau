@@ -31,6 +31,7 @@ from tau_agent.session.tree import SessionTreeError, path_to_entry
 from tau_agent.tools import AgentTool
 from tau_ai import ModelProvider
 from tau_ai.events import ProviderErrorEvent, ProviderResponseEndEvent, ProviderTextDeltaEvent
+from tau_coding.branch_summary import summarize_branch_messages_with_model
 from tau_coding.commands import CommandRegistry, CommandResult, create_default_command_registry
 from tau_coding.context import discover_project_context_with_diagnostics
 from tau_coding.context_window import (
@@ -64,9 +65,13 @@ from tau_coding.provider_config import (
     provider_default_thinking_level,
     provider_has_usable_credentials,
     provider_thinking_levels,
+    provider_thinking_unavailable_reason,
+    resolve_provider_selection,
     save_provider_settings,
+    set_default_provider_model,
 )
 from tau_coding.provider_runtime import ClosableModelProvider, create_model_provider
+from tau_coding.reload import CodingReloadSummary, ReloadCategorySummary
 from tau_coding.resources import (
     ResourceDiagnostic,
     ResourceError,
@@ -375,7 +380,14 @@ class CodingSession:
             if _is_branchable_tree_entry(entry)
         )
 
-    async def branch_to_entry(self, entry_id: str, *, summarize: bool = False) -> str:
+    async def branch_to_entry(
+        self,
+        entry_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+        replace_instructions: bool = False,
+    ) -> str:
         """Move the active leaf to a previous entry, preserving existing history."""
         entries = await self._config.storage.read_all()
         by_id = {entry.id: entry for entry in entries}
@@ -393,10 +405,15 @@ class CodingSession:
                 self._last_parent_id,
             )
             if abandoned_messages:
+                summary = await self._summarize_branch_messages(
+                    abandoned_messages,
+                    custom_instructions=custom_instructions,
+                    replace_instructions=replace_instructions,
+                )
                 summary_entry = BranchSummaryEntry(
                     parent_id=entry_id,
                     branch_root_id=entry_id,
-                    summary=summarize_messages_for_compaction(abandoned_messages),
+                    summary=summary,
                 )
                 await self._config.storage.append(summary_entry)
                 target_id = summary_entry.id
@@ -413,7 +430,11 @@ class CodingSession:
         self._sync_thinking_level_to_active_model()
         self._refresh_runtime_provider()
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=self.model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+            )
         suffix = " with branch summary" if summary_entry is not None else ""
         return f"Branched session at {target_id}{suffix}."
 
@@ -431,6 +452,16 @@ class CodingSession:
         if provider is None:
             return ()
         return provider_thinking_levels(provider, model=self.model)
+
+    @property
+    def thinking_unavailable_reason(self) -> str | None:
+        """Return why thinking controls are unavailable for the active model."""
+        if self.available_thinking_levels:
+            return None
+        provider = self._active_provider_config()
+        if provider is None:
+            return "Active provider settings are not available"
+        return provider_thinking_unavailable_reason(provider, model=self.model)
 
     @property
     def storage(self) -> SessionStorage:
@@ -572,12 +603,17 @@ class CodingSession:
         return None if message is None else message.content
 
     def set_model(self, model: str) -> None:
-        """Switch the active model for future turns in this process."""
+        """Switch the active model for future turns and make it the default."""
         self._harness.config.model = model
         self._sync_thinking_level_to_active_model()
         self._refresh_runtime_provider()
+        self._persist_default_model_choice()
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=model,
+                provider_name=self.provider_name,
+            )
 
     def set_model_choice(self, choice: ModelChoice) -> None:
         """Switch provider/model as one operation."""
@@ -624,7 +660,7 @@ class CodingSession:
         self.set_model_choice(choice)
         return choice
 
-    def set_provider(self, provider_name: str) -> None:
+    def set_provider(self, provider_name: str, *, persist_default: bool = True) -> None:
         """Switch the active provider and reset to that provider's default model."""
         if self._provider_settings is None:
             raise ProviderConfigError("Provider settings are not available for this session")
@@ -651,17 +687,21 @@ class CodingSession:
         self._runtime_provider_config = provider_config
         self._harness.config.model = model
         self._thinking_level = thinking_level
+        if persist_default:
+            self._persist_default_model_choice()
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=model,
+                provider_name=self.provider_name,
+            )
 
     async def set_thinking_level(self, level: str) -> str:
         """Persist and activate a thinking mode for future turns."""
         normalized = normalize_thinking_level(level)
         available = self.available_thinking_levels
         if not available:
-            raise ValueError(
-                f"Thinking controls are unavailable for {self._provider_name}:{self.model}"
-            )
+            raise ValueError(_unavailable_thinking_message(self))
         if normalized not in available:
             modes = ", ".join(available)
             raise ValueError(
@@ -691,7 +731,11 @@ class CodingSession:
         entries = await self._config.storage.read_all()
         self._state = SessionState.from_entries(entries, leaf_id=entry.id)
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=self.model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+            )
         return f"Thinking mode: {normalized}"
 
     async def cycle_thinking_level(self) -> str:
@@ -721,6 +765,16 @@ class CodingSession:
             current=self._thinking_level,
         )
 
+    def _persist_default_model_choice(self) -> None:
+        if self._provider_settings is None:
+            return
+        self._provider_settings = set_default_provider_model(
+            self._provider_settings,
+            provider_name=self.provider_name,
+            model=self.model,
+        )
+        save_provider_settings(self._provider_settings, self._resource_paths.paths)
+
     def _refresh_runtime_provider(self) -> None:
         if self._runtime_provider_config is None:
             return
@@ -738,28 +792,78 @@ class CodingSession:
         self._harness.config.provider = provider
         self._runtime_provider_config = provider_config
 
-    def reload(self) -> None:
-        """Reload Tau-owned resources and provider settings for future turns."""
+    def reload(self) -> CodingReloadSummary:
+        """Reload local coding resources and project context for future turns."""
+        before_skills = _skill_signatures(self._skills)
+        before_prompt_templates = _prompt_template_signatures(self._prompt_templates)
+        before_context_files = _context_file_signatures(self._context_files)
+        before_diagnostics = _diagnostic_signatures(self._resource_diagnostics)
+        before_system_prompt_inputs = _system_prompt_resource_signatures(
+            skills=self._skills,
+            context_files=self._context_files,
+        )
+
         resources = _load_session_resources(self._resource_paths, self._config.context_files)
+
+        after_skills = _skill_signatures(resources.skills)
+        after_prompt_templates = _prompt_template_signatures(resources.prompt_templates)
+        after_context_files = _context_file_signatures(resources.context_files)
+        after_diagnostics = _diagnostic_signatures(resources.diagnostics)
+        after_system_prompt_inputs = _system_prompt_resource_signatures(
+            skills=resources.skills,
+            context_files=resources.context_files,
+        )
+
+        rebuilt_system_prompt: str | None = None
+        system_prompt_rebuilt = False
+        if (
+            self._config.system is None
+            and before_system_prompt_inputs != after_system_prompt_inputs
+        ):
+            rebuilt_system_prompt = build_system_prompt(
+                BuildSystemPromptOptions(
+                    cwd=self._config.cwd,
+                    tools=self._harness.config.tools,
+                    skills=resources.skills,
+                    custom_prompt=self._config.custom_system_prompt,
+                    append_system_prompt=self._config.append_system_prompt,
+                    context_files=resources.context_files,
+                )
+            )
+            system_prompt_rebuilt = True
+
         self._skills = resources.skills
         self._prompt_templates = resources.prompt_templates
         self._context_files = resources.context_files
         self._resource_diagnostics = resources.diagnostics
-        if self._provider_settings is not None:
-            self._provider_settings = load_provider_settings()
+        if rebuilt_system_prompt is not None:
+            self._harness.config.system = rebuilt_system_prompt
+
+        return CodingReloadSummary(
+            skills=_category_summary(before_skills, after_skills),
+            prompt_templates=_category_summary(
+                before_prompt_templates,
+                after_prompt_templates,
+            ),
+            context_files=_category_summary(before_context_files, after_context_files),
+            diagnostics=_category_summary(before_diagnostics, after_diagnostics),
+            system_prompt_rebuilt=system_prompt_rebuilt,
+        )
+
+    def reload_provider_settings(self) -> None:
+        """Reload provider settings for login and model-selection flows."""
+        if self._provider_settings is None:
+            return
+        previous_settings = self._provider_settings
+        previous_thinking_level = self._thinking_level
+        self._provider_settings = load_provider_settings(self._resource_paths.paths)
+        try:
             self._sync_thinking_level_to_active_model()
             self._refresh_runtime_provider()
-        if self._config.system is None:
-            self._harness.config.system = build_system_prompt(
-                BuildSystemPromptOptions(
-                    cwd=self._config.cwd,
-                    tools=self._harness.config.tools,
-                    skills=self._skills,
-                    custom_prompt=self._config.custom_system_prompt,
-                    append_system_prompt=self._config.append_system_prompt,
-                    context_files=self._context_files,
-                )
-            )
+        except ProviderConfigError:
+            self._provider_settings = previous_settings
+            self._thinking_level = previous_thinking_level
+            raise
 
     async def resume(self, session_id: str) -> str:
         """Replace this session's active state with another indexed session."""
@@ -769,6 +873,22 @@ class CodingSession:
         record = manager.get_session(session_id)
         if record is None:
             raise ValueError(f"Unknown session: {session_id}")
+
+        provider_name = self._provider_name
+        runtime_provider_config = self._runtime_provider_config
+        if record.provider_name:
+            if self._provider_settings is None:
+                raise ValueError(
+                    "Cannot resume session provider without provider settings: "
+                    f"{record.provider_name}"
+                )
+            try:
+                runtime_provider_config = self._provider_settings.get_provider(record.provider_name)
+            except ProviderConfigError as exc:
+                raise ValueError(
+                    f"Session provider is not configured: {record.provider_name}"
+                ) from exc
+            provider_name = runtime_provider_config.name
 
         replacement = await type(self).load(
             CodingSessionConfig(
@@ -784,9 +904,9 @@ class CodingSession:
                 session_id=record.id,
                 session_manager=manager,
                 command_registry=self._command_registry,
-                provider_name=self._provider_name,
+                provider_name=provider_name,
                 provider_settings=self._provider_settings,
-                runtime_provider_config=self._runtime_provider_config,
+                runtime_provider_config=runtime_provider_config,
                 auto_compact_token_threshold=self._auto_compact_token_threshold,
                 auto_compact_enabled=self._auto_compact_enabled,
                 thinking_level=self._thinking_level,
@@ -816,19 +936,38 @@ class CodingSession:
         if manager is None:
             raise ValueError("Session manager is not available")
 
-        record = manager.create_session(cwd=self.cwd, model=self.model)
+        provider_name = self._provider_name
+        model = self.model
+        runtime_provider_config = self._runtime_provider_config
+        thinking_level = self._thinking_level
+        if self._provider_settings is not None:
+            selection = resolve_provider_selection(self._provider_settings)
+            provider_name = selection.provider.name
+            model = selection.model
+            runtime_provider_config = selection.provider
+            thinking_level = _coerced_thinking_level(
+                selection.provider,
+                model=model,
+                current=self._thinking_level,
+            )
+
+        record = manager.create_session(
+            cwd=self.cwd,
+            model=model,
+            provider_name=provider_name,
+        )
         replacement = await type(self).load(
             replace(
                 self._config,
                 provider=self._harness.config.provider,
-                model=record.model or self.model,
+                model=record.model or model,
                 cwd=record.cwd,
                 storage=jsonl_session_storage(record.path),
                 session_id=record.id,
-                provider_name=self._provider_name,
+                provider_name=provider_name,
                 provider_settings=self._provider_settings,
-                runtime_provider_config=self._runtime_provider_config,
-                thinking_level=self._thinking_level,
+                runtime_provider_config=runtime_provider_config,
+                thinking_level=thinking_level,
             )
         )
         self._config = replacement._config
@@ -1039,7 +1178,11 @@ class CodingSession:
         entries = await self._config.storage.read_all()
         self._state = SessionState.from_entries(entries)
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=self.model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+            )
 
     async def _try_auto_compact(
         self,
@@ -1139,6 +1282,25 @@ class CodingSession:
             raise RuntimeError("Compaction summarization returned an empty summary")
         return summary
 
+    async def _summarize_branch_messages(
+        self,
+        messages: tuple[AgentMessage, ...],
+        *,
+        custom_instructions: str | None = None,
+        replace_instructions: bool = False,
+    ) -> str:
+        try:
+            summary = await summarize_branch_messages_with_model(
+                provider=self._harness.config.provider,
+                model=self.model,
+                messages=messages,
+                custom_instructions=custom_instructions,
+                replace_instructions=replace_instructions,
+            )
+        except Exception:
+            summary = None
+        return summary or summarize_messages_for_compaction(messages)
+
     def _manual_compaction_plan(self) -> CompactionPlan:
         rows = self._active_context_rows()
         if not rows:
@@ -1194,7 +1356,11 @@ class CodingSession:
         self._state = SessionState.from_entries(entries, leaf_id=compaction.id)
         self._harness.replace_messages(self._state.messages)
         if self._config.session_id is not None and self._config.session_manager is not None:
-            self._config.session_manager.touch_session(self._config.session_id, model=self.model)
+            self._config.session_manager.touch_session(
+                self._config.session_id,
+                model=self.model,
+                provider_name=self.provider_name,
+            )
         return compaction
 
 
@@ -1462,6 +1628,14 @@ def _coerced_thinking_level(
     return default or levels[0]
 
 
+def _unavailable_thinking_message(session: CodingSession) -> str:
+    message = f"Thinking controls are unavailable for {session.provider_name}:{session.model}"
+    reason = session.thinking_unavailable_reason
+    if reason:
+        return f"{message}: {reason}"
+    return message
+
+
 def _terminal_command_context_message(command: str, output: str) -> str:
     return (
         "Terminal command executed by the user.\n\n"
@@ -1484,6 +1658,65 @@ def parse_terminal_command(text: str) -> TerminalCommandRequest | None:
             return None
         return TerminalCommandRequest(command=command, add_to_context=True)
     return None
+
+
+def _category_summary(
+    before: tuple[tuple[object, ...], ...],
+    after: tuple[tuple[object, ...], ...],
+) -> ReloadCategorySummary:
+    return ReloadCategorySummary(
+        before=len(before),
+        after=len(after),
+        changed=before != after,
+    )
+
+
+def _skill_signatures(skills: tuple[Skill, ...]) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (skill.name, str(skill.path), skill.description, skill.content) for skill in skills
+    )
+
+
+def _prompt_template_signatures(
+    prompt_templates: tuple[PromptTemplate, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (template.name, str(template.path), template.description, template.content)
+        for template in prompt_templates
+    )
+
+
+def _context_file_signatures(
+    context_files: tuple[ProjectContextFile, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple((context_file.path, context_file.content) for context_file in context_files)
+
+
+def _diagnostic_signatures(
+    diagnostics: tuple[ResourceDiagnostic, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(
+        (
+            diagnostic.kind,
+            diagnostic.message,
+            str(diagnostic.path) if diagnostic.path is not None else None,
+            diagnostic.name,
+            diagnostic.severity,
+        )
+        for diagnostic in diagnostics
+    )
+
+
+def _system_prompt_resource_signatures(
+    *,
+    skills: tuple[Skill, ...],
+    context_files: tuple[ProjectContextFile, ...],
+) -> tuple[tuple[object, ...], tuple[object, ...]]:
+    prompt_skills = tuple(
+        (skill.name, str(skill.path), skill.description)
+        for skill in sorted(skills, key=lambda item: item.name)
+    )
+    return (prompt_skills, _context_file_signatures(context_files))
 
 
 def _load_session_resources(

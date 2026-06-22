@@ -9,7 +9,16 @@ from tau_agent.tools import AgentToolResult, ToolCall
 from tau_agent.types import JSONValue
 from tau_coding.skills import parse_skill_invocation
 
-ChatItemRole = Literal["user", "assistant", "tool", "error", "status", "thinking", "skill"]
+ChatItemRole = Literal[
+    "user",
+    "assistant",
+    "tool",
+    "error",
+    "status",
+    "thinking",
+    "skill",
+    "branch_summary",
+]
 TOOL_RESULT_PREVIEW_LINES = 8
 TOOL_PATCH_PREVIEW_LINES = 32
 TOOL_RESULT_PREVIEW_CHARS = 2_000
@@ -69,7 +78,12 @@ class TuiState:
         )
 
     def add_user_message(self, content: str) -> None:
-        """Append a user-authored message, compacting skill invocations for display."""
+        """Append a user-authored message, compacting skill and summary messages."""
+        branch_summary = _parse_branch_summary_message(content)
+        if branch_summary is not None:
+            self.add_item("branch_summary", "Branch summary (Ctrl+O to expand)", tool_result_text=branch_summary)
+            return
+
         skill_invocation = parse_skill_invocation(content)
         if skill_invocation is None:
             self.add_item("user", content)
@@ -152,6 +166,14 @@ class TuiState:
                         error=message.error,
                     )
                 )
+
+
+def _parse_branch_summary_message(content: str) -> str | None:
+    prefix = "The following is a summary of a branch that this conversation came back from:\n<summary>\n"
+    suffix = "\n</summary>"
+    if content.startswith(prefix) and content.endswith(suffix):
+        return content.removeprefix(prefix).removesuffix(suffix)
+    return None
 
 
 def format_tool_call_block(tool_call: ToolCall) -> str:

@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import Literal
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
-ThinkingParameter = Literal["reasoning_effort"]
+ThinkingParameter = Literal["reasoning_effort", "reasoning.effort", "anthropic.thinking"]
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh"]
 
 THINKING_LEVELS: tuple[ThinkingLevel, ...] = (
@@ -56,6 +56,20 @@ def reasoning_effort_for_level(level: str | None) -> ReasoningEffort:
     if normalized == "off":
         return "none"
     return normalized
+
+
+def anthropic_thinking_budget_for_level(level: str | None) -> int | None:
+    """Map Tau's UI thinking level to Anthropic extended-thinking tokens."""
+    normalized = normalize_thinking_level(level)
+    if normalized == "off":
+        return None
+    return {
+        "minimal": 1024,
+        "low": 2048,
+        "medium": 4096,
+        "high": 8192,
+        "xhigh": 16384,
+    }[normalized]
 
 
 def next_thinking_level(

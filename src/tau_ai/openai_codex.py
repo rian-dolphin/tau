@@ -53,6 +53,8 @@ class OpenAICodexConfig:
     max_retries: int = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRIES
     max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
     originator: str = "tau"
+    reasoning_effort: str | None = None
+    reasoning_summary: str = "auto"
 
 
 class OpenAICodexProvider:
@@ -92,6 +94,8 @@ class OpenAICodexProvider:
                 system=system,
                 messages=messages,
                 tools=tools,
+                reasoning_effort=self._config.reasoning_effort,
+                reasoning_summary=self._config.reasoning_summary,
             )
             url = _resolve_codex_url(self._config.base_url)
 
@@ -254,6 +258,8 @@ def _build_codex_payload(
     system: str,
     messages: list[AgentMessage],
     tools: list[AgentTool],
+    reasoning_effort: str | None = None,
+    reasoning_summary: str = "auto",
 ) -> dict[str, JSONValue]:
     payload: dict[str, JSONValue] = {
         "model": model,
@@ -266,6 +272,11 @@ def _build_codex_payload(
         "tool_choice": "auto",
         "parallel_tool_calls": True,
     }
+    if reasoning_effort is not None:
+        payload["reasoning"] = {
+            "effort": reasoning_effort,
+            "summary": reasoning_summary,
+        }
     if tools:
         payload["tools"] = [_tool_to_codex(tool) for tool in tools]
     return payload

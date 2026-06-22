@@ -104,6 +104,17 @@ BUILTIN_PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
             "gpt-5.3-codex-spark": 400_000,
             "gpt-5.2": 400_000,
         },
+        thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
+        thinking_models=(
+            "gpt-5.5",
+            "gpt-5.4",
+            "gpt-5.4-mini",
+            "gpt-5.3-codex",
+            "gpt-5.3-codex-spark",
+            "gpt-5.2",
+        ),
+        thinking_default="medium",
+        thinking_parameter="reasoning.effort",
     ),
     ProviderCatalogEntry(
         name="anthropic",
@@ -124,6 +135,13 @@ BUILTIN_PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
             "claude-opus-4-8": 200_000,
             "claude-haiku-4-5": 200_000,
         },
+        thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
+        thinking_models=(
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+        ),
+        thinking_default="medium",
+        thinking_parameter="anthropic.thinking",
     ),
     ProviderCatalogEntry(
         name="openrouter",
@@ -162,6 +180,15 @@ BUILTIN_PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
             "qwen/qwen3-coder-plus": 1_000_000,
             "mistralai/codestral-2508": 256_000,
         },
+        thinking_levels=("off", "low", "medium", "high", "xhigh"),
+        thinking_models=(
+            "openai/gpt-5.5",
+            "openai/gpt-5.4",
+            "openai/gpt-5.3-codex",
+            "qwen/qwen3-235b-a22b-thinking-2507",
+        ),
+        thinking_default="medium",
+        thinking_parameter="reasoning_effort",
     ),
     ProviderCatalogEntry(
         name="huggingface",
@@ -196,6 +223,15 @@ BUILTIN_PROVIDER_CATALOG: tuple[ProviderCatalogEntry, ...] = (
             "openai/gpt-oss-20b": 131_072,
             "Qwen/Qwen3-Coder-480B-A35B-Instruct": 262_144,
         },
+        thinking_levels=("low", "medium", "high"),
+        thinking_models=(
+            "openai/gpt-oss-120b",
+            "openai/gpt-oss-20b",
+            "Qwen/Qwen3-235B-A22B-Thinking-2507",
+            "deepseek-ai/DeepSeek-R1",
+        ),
+        thinking_default="medium",
+        thinking_parameter="reasoning_effort",
     ),
 )
 

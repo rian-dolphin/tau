@@ -37,6 +37,7 @@ from tau_coding import (
     CodingSessionConfig,
     FileCredentialStore,
     ModelChoice,
+    OpenAICodexProviderConfig,
     OpenAICompatibleProviderConfig,
     ProviderSettings,
     ScopedModelConfig,
@@ -398,7 +399,10 @@ async def test_session_cycles_thinking_level(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_session_uses_active_model_thinking_capabilities(tmp_path: Path) -> None:
+async def test_session_uses_active_model_thinking_capabilities(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
         models=("reasoner", "plain"),
@@ -422,6 +426,7 @@ async def test_session_uses_active_model_thinking_capabilities(tmp_path: Path) -
 
     assert session.available_thinking_levels == ("off", "low", "high")
     assert session.thinking_level == "low"
+    assert session.thinking_unavailable_reason is None
     assert await session.set_thinking_level("high") == "Thinking mode: high"
 
     with pytest.raises(ValueError, match="not available"):
@@ -430,8 +435,52 @@ async def test_session_uses_active_model_thinking_capabilities(tmp_path: Path) -
     session.set_model("plain")
 
     assert session.available_thinking_levels == ()
-    with pytest.raises(ValueError, match="unavailable"):
+    assert (
+        session.thinking_unavailable_reason
+        == "openai:plain is not declared in thinking_models"
+    )
+    with pytest.raises(ValueError, match="openai:plain is not declared in thinking_models"):
         await session.cycle_thinking_level()
+
+    session.set_model("reasoner")
+
+    assert session.available_thinking_levels == ("off", "low", "high")
+    assert session.thinking_level == "high"
+    assert session.thinking_unavailable_reason is None
+
+
+@pytest.mark.anyio
+async def test_session_uses_codex_subscription_thinking_capabilities(
+    tmp_path: Path,
+) -> None:
+    provider_config = OpenAICodexProviderConfig(
+        thinking_levels=("off", "minimal", "low", "medium", "high", "xhigh"),
+        thinking_models=("gpt-5.5",),
+        thinking_default="medium",
+        thinking_parameter="reasoning.effort",
+    )
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="gpt-5.5",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "codex-session.jsonl"),
+            cwd=tmp_path,
+            provider_name="openai-codex",
+            provider_settings=ProviderSettings(providers=(provider_config,)),
+        )
+    )
+
+    assert session.available_thinking_levels == (
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+    assert session.thinking_unavailable_reason is None
+    assert await session.set_thinking_level("high") == "Thinking mode: high"
 
 
 @pytest.mark.anyio
@@ -639,6 +688,129 @@ async def test_session_branch_restores_model_from_selected_path(tmp_path: Path) 
 @pytest.mark.anyio
 async def test_session_branch_with_summary_rebuilds_context(tmp_path: Path) -> None:
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(
+                    message=AssistantMessage(content="The abandoned branch went left.")
+                ),
+            ]
+        ]
+    )
+    root = MessageEntry(id="root", message=UserMessage(content="Root"))
+    left = MessageEntry(id="left", parent_id="root", message=AssistantMessage(content="Left"))
+    right = MessageEntry(
+        id="right",
+        parent_id="left",
+        message=UserMessage(content="Abandoned follow-up"),
+    )
+    await storage.append(root)
+    await storage.append(left)
+    await storage.append(right)
+    await storage.append(LeafEntry(entry_id="right"))
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+
+    result = await session.branch_to_entry("root", summarize=True)
+    entries = await storage.read_all()
+    summary = entries[-2]
+
+    assert "with branch summary" in result
+    assert summary.type == "branch_summary"
+    assert summary.parent_id == "root"
+    assert summary.branch_root_id == "root"
+    assert summary.summary.startswith(
+        "The user explored a different conversation branch before returning here."
+    )
+    assert "The abandoned branch went left." in summary.summary
+    assert provider.calls[0][3] == []
+    assert "<conversation>" in provider.calls[0][2][0].content
+    assert "Use this EXACT format:" in provider.calls[0][2][0].content
+    assert "Abandoned follow-up" in provider.calls[0][2][0].content
+    assert len(session.messages) == 1
+    assert session.messages[0].role == "user"
+    assert isinstance(session.messages[0].content, str)
+    assert session.messages[0].content.startswith(
+        "The following is a summary of a branch that this conversation came back from:"
+    )
+    assert "The abandoned branch went left." in session.messages[0].content
+
+
+@pytest.mark.anyio
+async def test_session_branch_with_summary_accepts_custom_instructions(tmp_path: Path) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(
+                    message=AssistantMessage(content="Custom branch summary.")
+                ),
+            ]
+        ]
+    )
+    root = MessageEntry(id="root", message=UserMessage(content="Root"))
+    left = MessageEntry(id="left", parent_id="root", message=AssistantMessage(content="Left"))
+    right = MessageEntry(
+        id="right",
+        parent_id="left",
+        message=UserMessage(content="Abandoned follow-up"),
+    )
+    await storage.append(root)
+    await storage.append(left)
+    await storage.append(right)
+    await storage.append(LeafEntry(entry_id="right"))
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+
+    await session.branch_to_entry(
+        "root",
+        summarize=True,
+        custom_instructions="Focus on failing commands.",
+    )
+
+    prompt = provider.calls[0][2][0].content
+    assert "Use this EXACT format:" in prompt
+    assert "Additional focus: Focus on failing commands." in prompt
+
+
+@pytest.mark.anyio
+async def test_session_branch_with_summary_tracks_file_operations(tmp_path: Path) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="File work summary.")),
+            ]
+        ]
+    )
+    root = MessageEntry(id="root", message=UserMessage(content="Root"))
+    read_call = ToolCall(id="read-1", name="read", arguments={"path": "src/read_only.py"})
+    edit_call = ToolCall(id="edit-1", name="edit", arguments={"path": "src/changed.py"})
+    assistant = MessageEntry(
+        id="assistant",
+        parent_id="root",
+        message=AssistantMessage(content="Using tools", tool_calls=[read_call, edit_call]),
+    )
+    await storage.append(root)
+    await storage.append(assistant)
+    await storage.append(LeafEntry(entry_id="assistant"))
+    session = await CodingSession.load(_config(tmp_path, provider, storage))
+
+    await session.branch_to_entry("root", summarize=True)
+    entries = await storage.read_all()
+    summary = entries[-2]
+
+    assert summary.type == "branch_summary"
+    assert "<read-files>\nsrc/read_only.py\n</read-files>" in summary.summary
+    assert "<modified-files>\nsrc/changed.py\n</modified-files>" in summary.summary
+
+
+@pytest.mark.anyio
+async def test_session_branch_with_summary_falls_back_when_model_summary_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
     left = MessageEntry(id="left", parent_id="root", message=AssistantMessage(content="Left"))
     right = MessageEntry(
@@ -658,13 +830,10 @@ async def test_session_branch_with_summary_rebuilds_context(tmp_path: Path) -> N
 
     assert "with branch summary" in result
     assert summary.type == "branch_summary"
-    assert summary.parent_id == "root"
-    assert summary.branch_root_id == "root"
-    assert session.messages[0] == UserMessage(content="Root")
-    assert session.messages[1].role == "user"
-    assert isinstance(session.messages[1].content, str)
-    assert "Previous branch summary from root:" in session.messages[1].content
-    assert "Abandoned follow-up" in session.messages[1].content
+    assert "Automatically compacted 2 prior message(s)." in summary.summary
+    assert "Abandoned follow-up" in summary.summary
+    assert len(session.messages) == 1
+    assert "Abandoned follow-up" in session.messages[0].content
 
 
 @pytest.mark.anyio
@@ -958,16 +1127,118 @@ async def test_session_reload_refreshes_resources_and_system_prompt(tmp_path: Pa
     )
     (tmp_path / "AGENTS.md").write_text("Reloaded project rules.", encoding="utf-8")
 
+    entries_before = await storage.read_all()
     result = session.handle_command("/reload")
+    entries_after = await storage.read_all()
     _events = await _collect_session_events(session.prompt("Hello"))
 
     assert result.message is not None
-    assert "Skills: 1" in result.message
-    assert "Context files: 1" in result.message
+    assert "Reloaded local coding resources and project context." in result.message
+    assert "Skills: 1 total (changed, +1)" in result.message
+    assert "Project context files: 1 total (changed, +1)" in result.message
+    assert "Next-turn system prompt: rebuilt" in result.message
+    assert "Not refreshed by /reload" in result.message
+    assert entries_after == entries_before
     assert [skill.name for skill in session.skills] == ["testing"]
     assert [Path(context_file.path).name for context_file in session.context_files] == ["AGENTS.md"]
     assert "Reloaded project rules." in provider.calls[0][1]
     assert "<name>testing</name>" in provider.calls[0][1]
+
+
+@pytest.mark.anyio
+async def test_session_reload_skips_provider_settings_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def fail_load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
+        del paths
+        raise AssertionError("/reload should not refresh provider settings")
+
+    monkeypatch.setattr(
+        coding_session_module,
+        "load_provider_settings",
+        fail_load_provider_settings,
+    )
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="fake",
+            storage=JsonlSessionStorage(tmp_path / "session.jsonl"),
+            cwd=tmp_path,
+            provider_settings=ProviderSettings(
+                providers=(OpenAICompatibleProviderConfig(name="openai"),)
+            ),
+        )
+    )
+
+    result = session.handle_command("/reload")
+
+    assert result.message is not None
+    assert "Provider config:" in result.message
+    assert "Not refreshed by /reload" in result.message
+
+
+@pytest.mark.anyio
+async def test_session_reload_leaves_system_prompt_when_inputs_are_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="fake",
+            storage=storage,
+            cwd=tmp_path,
+        )
+    )
+
+    def fail_build_system_prompt(options: object) -> str:
+        del options
+        raise AssertionError("system prompt should not be rebuilt")
+
+    monkeypatch.setattr(
+        coding_session_module,
+        "build_system_prompt",
+        fail_build_system_prompt,
+    )
+
+    result = session.handle_command("/reload")
+
+    assert result.message is not None
+    assert "Next-turn system prompt: unchanged" in result.message
+
+
+@pytest.mark.anyio
+async def test_session_provider_settings_reload_uses_session_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tau_paths = TauPaths(home=tmp_path / "tau-home", agents_home=tmp_path / "agents-home")
+    seen_paths: list[TauPaths | None] = []
+
+    def load_provider_settings(paths: TauPaths | None = None) -> ProviderSettings:
+        seen_paths.append(paths)
+        return ProviderSettings(providers=(OpenAICompatibleProviderConfig(name="openai"),))
+
+    monkeypatch.setattr(coding_session_module, "load_provider_settings", load_provider_settings)
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="fake",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "provider-reload-session.jsonl"),
+            cwd=tmp_path,
+            provider_settings=ProviderSettings(
+                providers=(OpenAICompatibleProviderConfig(name="openai"),)
+            ),
+            resource_paths=TauResourcePaths(root=tau_paths.home, paths=tau_paths),
+        )
+    )
+
+    session.reload_provider_settings()
+
+    assert seen_paths == [tau_paths]
 
 
 @pytest.mark.anyio
@@ -1477,6 +1748,240 @@ async def test_session_resumes_indexed_session(tmp_path: Path) -> None:
         AssistantMessage(content="Restored"),
         UserMessage(content="Continue."),
     ]
+
+
+@pytest.mark.anyio
+async def test_session_set_model_persists_default_provider_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
+    provider_config = OpenAICompatibleProviderConfig(
+        name="openai",
+        models=("gpt-5", "gpt-5-mini"),
+        default_model="gpt-5",
+    )
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="gpt-5",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "session.jsonl"),
+            cwd=tmp_path,
+            provider_name="openai",
+            provider_settings=ProviderSettings(providers=(provider_config,)),
+            resource_paths=TauResourcePaths(root=tau_paths.home, paths=tau_paths),
+        )
+    )
+
+    session.set_model("gpt-5-mini")
+
+    saved = coding_session_module.load_provider_settings(tau_paths)
+    assert saved.default_provider == "openai"
+    assert saved.get_provider("openai").default_model == "gpt-5-mini"
+
+
+@pytest.mark.anyio
+async def test_session_set_model_choice_persists_default_provider_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
+    settings = ProviderSettings(
+        default_provider="openai",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                models=("gpt-5",),
+                default_model="gpt-5",
+            ),
+            OpenAICompatibleProviderConfig(
+                name="local",
+                base_url="http://localhost:11434/v1",
+                api_key_env="LOCAL_API_KEY",
+                models=("qwen", "llama"),
+                default_model="qwen",
+            ),
+        ),
+    )
+    created: list[tuple[str, str | None]] = []
+
+    def create_provider(
+        provider_config: object,
+        *,
+        credential_store: FileCredentialStore | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+    ) -> SwitchableFakeProvider:
+        del credential_store, thinking_level
+        created.append((provider_config.name, model))  # type: ignore[attr-defined]
+        return SwitchableFakeProvider(provider_config)
+
+    monkeypatch.setattr(coding_session_module, "create_model_provider", create_provider)
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="gpt-5",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "session.jsonl"),
+            cwd=tmp_path,
+            provider_name="openai",
+            provider_settings=settings,
+            runtime_provider_config=settings.get_provider("openai"),
+            resource_paths=TauResourcePaths(root=tau_paths.home, paths=tau_paths),
+        )
+    )
+    created.clear()
+
+    session.set_model_choice(ModelChoice(provider_name="local", model="llama"))
+
+    saved = coding_session_module.load_provider_settings(tau_paths)
+    assert saved.default_provider == "local"
+    assert saved.get_provider("local").default_model == "llama"
+    assert created == [("local", "qwen"), ("local", "llama")]
+
+
+@pytest.mark.anyio
+async def test_session_new_session_uses_default_provider_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
+    current_record = manager.create_session(
+        cwd=tmp_path,
+        model="openai/gpt-5.5",
+        provider_name="openrouter",
+    )
+    settings = ProviderSettings(
+        default_provider="openai",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                models=("gpt-5",),
+                default_model="gpt-5",
+            ),
+            OpenAICompatibleProviderConfig(
+                name="openrouter",
+                base_url="https://openrouter.ai/api/v1",
+                api_key_env="OPENROUTER_API_KEY",
+                models=("openai/gpt-5.5",),
+                default_model="openai/gpt-5.5",
+            ),
+        ),
+    )
+    created: list[tuple[str, str | None]] = []
+
+    def create_provider(
+        provider_config: object,
+        *,
+        credential_store: FileCredentialStore | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+    ) -> SwitchableFakeProvider:
+        del credential_store, thinking_level
+        created.append((provider_config.name, model))  # type: ignore[attr-defined]
+        return SwitchableFakeProvider(provider_config)
+
+    monkeypatch.setattr(coding_session_module, "create_model_provider", create_provider)
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="openai/gpt-5.5",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(current_record.path),
+            cwd=current_record.cwd,
+            session_id=current_record.id,
+            session_manager=manager,
+            provider_name="openrouter",
+            provider_settings=settings,
+            runtime_provider_config=settings.get_provider("openrouter"),
+        )
+    )
+    created.clear()
+
+    message = await session.new_session()
+
+    assert message.startswith("Started new session: ")
+    assert session.provider_name == "openai"
+    assert session.model == "gpt-5"
+    assert manager.get_session(session.session_id).provider_name == "openai"  # type: ignore[arg-type]
+    assert manager.get_session(session.session_id).model == "gpt-5"  # type: ignore[arg-type]
+    assert created == [("openai", "gpt-5")]
+
+
+@pytest.mark.anyio
+async def test_session_resume_uses_target_session_provider_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
+    first_record = manager.create_session(
+        cwd=tmp_path / "first",
+        model="gpt-5",
+        provider_name="openai",
+        title="First",
+    )
+    second_cwd = tmp_path / "second"
+    second_cwd.mkdir(parents=True)
+    second_record = manager.create_session(
+        cwd=second_cwd,
+        model="qwen",
+        provider_name="local",
+        title="Second",
+    )
+    settings = ProviderSettings(
+        default_provider="openai",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                models=("gpt-5",),
+                default_model="gpt-5",
+            ),
+            OpenAICompatibleProviderConfig(
+                name="local",
+                base_url="http://localhost:11434/v1",
+                api_key_env="LOCAL_API_KEY",
+                models=("qwen",),
+                default_model="qwen",
+            ),
+        ),
+    )
+    created: list[tuple[str, str | None]] = []
+
+    def create_provider(
+        provider_config: object,
+        *,
+        credential_store: FileCredentialStore | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+    ) -> SwitchableFakeProvider:
+        del credential_store, thinking_level
+        created.append((provider_config.name, model))  # type: ignore[attr-defined]
+        return SwitchableFakeProvider(provider_config)
+
+    monkeypatch.setattr(coding_session_module, "create_model_provider", create_provider)
+    second_storage = JsonlSessionStorage(second_record.path)
+    await second_storage.append(SessionInfoEntry(cwd=str(second_record.cwd)))
+    await second_storage.append(ModelChangeEntry(model="qwen"))
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="gpt-5",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(first_record.path),
+            cwd=first_record.cwd,
+            session_id=first_record.id,
+            session_manager=manager,
+            provider_name="openai",
+            provider_settings=settings,
+            runtime_provider_config=settings.get_provider("openai"),
+        )
+    )
+    created.clear()
+
+    await session.resume(second_record.id)
+
+    assert session.provider_name == "local"
+    assert session.model == "qwen"
+    assert created == [("local", "qwen")]
 
 
 @pytest.mark.anyio

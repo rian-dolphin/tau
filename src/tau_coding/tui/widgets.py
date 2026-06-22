@@ -1,9 +1,10 @@
 """Small Textual widgets for Tau's interactive TUI."""
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from subprocess import TimeoutExpired, run
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from pygments.lexers import get_lexer_by_name  # type: ignore[import-untyped]
 from pygments.util import ClassNotFound  # type: ignore[import-untyped]
@@ -17,8 +18,15 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.events import Resize
-from textual.widgets import RichLog, Static
+from textual.geometry import Offset
+from textual.selection import Selection
+from textual.strip import Strip
+from textual.widgets import Markdown as TextualMarkdown
+from textual.widgets import Static
+from textual.widgets.markdown import MarkdownStream
 
 from tau_agent.tools import AgentTool
 from tau_coding.prompt_templates import PromptTemplate
@@ -29,6 +37,22 @@ from tau_coding.tui.config import TAU_DARK_THEME, TuiRoleStyle, TuiTheme
 from tau_coding.tui.state import ChatItem, TuiState
 
 TAU_SIDEBAR_LOGO = "τ = 2π"
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptLine:
+    """Plain transcript line used by compatibility inspection helpers."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderedSelectionLine:
+    """One rendered transcript line mapped back to copyable body text."""
+
+    rendered_y: int
+    rendered_prefix_width: int
+    text: str
 
 
 class SessionSummarySource(Protocol):
@@ -94,14 +118,223 @@ class CompactSessionInfo(Static):
         self.update(render_compact_session_info(session, theme=theme))
 
 
-class TranscriptView(RichLog):
-    """Scrollable transcript view backed by ``TuiState``."""
+_SELECTABLE_MARKDOWN_BLOCKS: dict[type[Any], type[Any]] = {}
+
+
+class ThemedMarkdownWidget(TextualMarkdown):
+    """Textual Markdown widget reserved for Tau transcript streaming."""
+
+    def __init__(self, markdown: str | None = None, *, theme: TuiTheme) -> None:
+        del theme
+        super().__init__(markdown)
+
+    def get_block_class(self, block_name: str) -> type[Any]:
+        """Return Markdown blocks that expose per-cell selection offsets."""
+        return _selectable_markdown_block_class(super().get_block_class(block_name))
+
+
+def _selectable_markdown_block_class(block_class: type[Any]) -> type[Any]:
+    cached = _SELECTABLE_MARKDOWN_BLOCKS.get(block_class)
+    if cached is not None:
+        return cached
+
+    class SelectableMarkdownBlock(block_class):  # type: ignore[misc]
+        """Markdown block with live Textual selection painting."""
+
+        def render_line(self, y: int) -> Strip:
+            strip = cast(Strip, super().render_line(y)).apply_offsets(0, y)
+            selection = self.text_selection
+            if selection is None:
+                return strip
+            span = selection.get_span(y)
+            if span is None:
+                return strip
+            start, end = span
+            if end == -1:
+                end = strip.cell_length
+            return _stylize_strip_range(
+                strip,
+                start=start,
+                end=end,
+                style=self.screen.get_visual_style("screen--selection").rich_style,
+            )
+
+        def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+            visual = self._render()
+            text = str(visual) if isinstance(visual, Text | Content) else self.source
+            if text is None:
+                return None
+            selected_text = _extract_text_selection(text, selection)
+            if not selected_text:
+                return None
+            return selected_text, "\n"
+
+    SelectableMarkdownBlock.__name__ = f"Selectable{block_class.__name__}"
+    _SELECTABLE_MARKDOWN_BLOCKS[block_class] = SelectableMarkdownBlock
+    return SelectableMarkdownBlock
+
+
+class TranscriptMessageWidget(Static):
+    """One selectable transcript message block."""
+
+    DEFAULT_CSS = """
+    TranscriptMessageWidget {
+        width: 1fr;
+        height: auto;
+    }
+    """
+
+    def __init__(
+        self,
+        item: ChatItem,
+        *,
+        theme: TuiTheme,
+        show_tool_results: bool,
+    ) -> None:
+        self.item = item
+        self.selection_text = transcript_item_selection_text(
+            item,
+            show_tool_results=show_tool_results,
+        )
+        super().__init__(
+            render_chat_item(
+                item,
+                theme=theme,
+                show_tool_results=show_tool_results,
+            ),
+            expand=True,
+            shrink=True,
+            markup=False,
+            classes="transcript-message",
+        )
+
+    def render_line(self, y: int) -> Strip:
+        """Render one line with Textual selection offsets and selection styling."""
+        strip = super().render_line(y).apply_offsets(0, y)
+        selection = self.text_selection
+        if selection is None:
+            return strip
+        span = selection.get_span(y)
+        if span is None:
+            return strip
+        start, end = span
+        if end == -1:
+            end = strip.cell_length
+        return _stylize_strip_range(
+            strip,
+            start=start,
+            end=end,
+            style=self.screen.get_visual_style("screen--selection").rich_style,
+        )
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Return selected text from this message, not the whole transcript."""
+        selected_text = _extract_rendered_selection(self, selection)
+        if selected_text is None:
+            selected_text = _extract_text_selection(self.selection_text, selection)
+        if not selected_text:
+            return None
+        return selected_text, "\n"
+
+
+class StreamingTranscriptMessageWidget(Vertical):
+    """One assistant or thinking message block that accepts streamed fragments."""
+
+    DEFAULT_CSS = """
+    StreamingTranscriptMessageWidget {
+        width: 1fr;
+        height: auto;
+        margin: 1 1 1 0;
+    }
+
+    StreamingTranscriptMessageWidget > .streaming-message-row {
+        height: auto;
+    }
+
+    StreamingTranscriptMessageWidget > .streaming-message-row > .streaming-message-gutter {
+        width: 1;
+        height: auto;
+    }
+
+    StreamingTranscriptMessageWidget > .streaming-message-row > ThemedMarkdownWidget {
+        width: 1fr;
+        height: auto;
+        padding: 0 1 0 1;
+    }
+    """
+
+    def __init__(self, item: ChatItem, *, theme: TuiTheme) -> None:
+        if item.role not in {"assistant", "thinking"}:
+            raise ValueError("Streaming transcript widgets only support assistant/thinking items")
+        self.item = item
+        self.selection_text = item.text
+        self._theme = theme
+        self._markdown: ThemedMarkdownWidget | None = None
+        self._stream: MarkdownStream | None = None
+        super().__init__(classes="transcript-message")
+
+    def compose(self) -> Any:
+        self._markdown = ThemedMarkdownWidget(self.item.text, theme=self._theme)
+        with Horizontal(classes="streaming-message-row"):
+            yield Static("▌", classes="streaming-message-gutter")
+            yield self._markdown
+
+    @property
+    def stream(self) -> MarkdownStream:
+        markdown = self._markdown
+        if markdown is None:
+            raise RuntimeError("Streaming transcript widget is not mounted")
+        if self._stream is None:
+            self._stream = markdown.get_stream(markdown)
+        return self._stream
+
+    async def append_fragment(self, fragment: str) -> None:
+        """Append streamed markdown without rebuilding the whole transcript."""
+        if not fragment:
+            return
+        self.item.text += fragment
+        self.selection_text += fragment
+        await self.stream.write(fragment)
+
+    async def replace_text(self, text: str) -> None:
+        """Replace the current markdown text, usually with the final provider message."""
+        self.item.text = text
+        self.selection_text = text
+        if self._markdown is not None:
+            self._stream = None
+            await self._markdown.update(text)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        """Return selected text from this streamed message block."""
+        selected_text = _extract_text_selection(self.selection_text, selection)
+        if not selected_text:
+            return None
+        return selected_text, "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        """Refresh markdown children so Textual can paint live selection spans."""
+        super().selection_updated(selection)
+        if self._markdown is not None:
+            self._markdown.selection_updated(selection)
+
+
+class TranscriptView(VerticalScroll):
+    """Scrollable transcript view backed by individual selectable message widgets."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        for legacy_option in ("wrap", "highlight", "markup"):
+            kwargs.pop(legacy_option, None)
+        min_width = kwargs.pop("min_width", None)
         super().__init__(*args, **kwargs)
+        self.min_width = min_width
+        if min_width is not None:
+            self.styles.min_width = min_width
         self._render_state: TuiState | None = None
         self._render_theme: TuiTheme = TAU_DARK_THEME
         self._last_render_width = 0
+        self._active_assistant_widget: StreamingTranscriptMessageWidget | None = None
+        self._active_thinking_widget: StreamingTranscriptMessageWidget | None = None
+        self._hidden_thinking_placeholder_visible = False
 
     def update_from_state(
         self,
@@ -116,7 +349,7 @@ class TranscriptView(RichLog):
 
     def on_resize(self, event: Resize) -> None:
         """Re-render transcript entries when the terminal width changes."""
-        super().on_resize(event)
+        del event
         if self._render_state is None:
             return
         width = self.scrollable_content_region.width
@@ -132,31 +365,301 @@ class TranscriptView(RichLog):
             return
         theme = self._render_theme
         self._last_render_width = self.scrollable_content_region.width
-        self.clear()
-        for _index, item in enumerate(state.items):
+        self.remove_children(
+            [
+                child
+                for child in self.children
+                if isinstance(child, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
+            ]
+        )
+        self._active_assistant_widget = None
+        self._active_thinking_widget = None
+        self._hidden_thinking_placeholder_visible = False
+        hidden_thinking_placeholder = False
+        for item in state.items:
             if item.role == "thinking" and not state.show_thinking:
+                if not hidden_thinking_placeholder:
+                    self.mount(
+                        TranscriptMessageWidget(
+                            ChatItem(
+                                role="thinking",
+                                text="Thinking… Press Ctrl+T to show thinking tokens.",
+                            ),
+                            theme=theme,
+                            show_tool_results=state.show_tool_results,
+                        )
+                    )
+                    hidden_thinking_placeholder = True
                 continue
-            self.write(
-                render_chat_item(
+            hidden_thinking_placeholder = False
+            self.mount(
+                TranscriptMessageWidget(
                     item,
                     theme=theme,
                     show_tool_results=state.show_tool_results or item.always_show_tool_result,
-                ),
-                expand=True,
-                shrink=True,
-                scroll_end=scroll_end,
+                )
             )
         if state.assistant_buffer:
-            self.write(
-                render_chat_item(
+            self.mount(
+                TranscriptMessageWidget(
                     ChatItem(role="assistant", text=state.assistant_buffer),
                     theme=theme,
                     show_tool_results=state.show_tool_results,
+                )
+            )
+        self.refresh(layout=True)
+        if scroll_end:
+            self.scroll_end(animate=False)
+
+    async def append_item(
+        self,
+        item: ChatItem,
+        *,
+        theme: TuiTheme = TAU_DARK_THEME,
+        show_tool_results: bool = False,
+        scroll_end: bool = True,
+    ) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
+        """Append one transcript item without rebuilding previous blocks."""
+        self._render_theme = theme
+        widget = _transcript_widget(
+            item,
+            theme=theme,
+            show_tool_results=show_tool_results,
+        )
+        await self.mount(widget)
+        self._active_assistant_widget = None
+        self._active_thinking_widget = None
+        self._hidden_thinking_placeholder_visible = False
+        self._last_render_width = self.scrollable_content_region.width
+        self.refresh(layout=True)
+        if scroll_end:
+            self.scroll_end(animate=False)
+        return widget
+
+    async def start_assistant_message(
+        self,
+        *,
+        theme: TuiTheme = TAU_DARK_THEME,
+        scroll_end: bool = True,
+    ) -> StreamingTranscriptMessageWidget:
+        """Create the active assistant message widget if needed."""
+        if self._active_assistant_widget is not None:
+            return self._active_assistant_widget
+        widget = StreamingTranscriptMessageWidget(
+            ChatItem(role="assistant", text=""),
+            theme=theme,
+        )
+        self._render_theme = theme
+        await self.mount(widget)
+        self._active_assistant_widget = widget
+        self._last_render_width = self.scrollable_content_region.width
+        if scroll_end:
+            self.scroll_end(animate=False)
+        return widget
+
+    async def append_assistant_delta(
+        self,
+        delta: str,
+        *,
+        theme: TuiTheme = TAU_DARK_THEME,
+        scroll_end: bool = True,
+    ) -> None:
+        """Append streamed assistant text to the active message widget."""
+        self._active_thinking_widget = None
+        self._hidden_thinking_placeholder_visible = False
+        widget = await self.start_assistant_message(theme=theme, scroll_end=scroll_end)
+        await widget.append_fragment(delta)
+        if scroll_end:
+            self.scroll_end(animate=False)
+
+    async def append_thinking_delta(
+        self,
+        delta: str,
+        *,
+        theme: TuiTheme = TAU_DARK_THEME,
+        show_thinking: bool,
+        scroll_end: bool = True,
+    ) -> None:
+        """Append streamed thinking text or one hidden-thinking placeholder."""
+        if not show_thinking:
+            if self._hidden_thinking_placeholder_visible:
+                return
+            await self.append_item(
+                ChatItem(
+                    role="thinking",
+                    text="Thinking… Press Ctrl+T to show thinking tokens.",
                 ),
-                expand=True,
-                shrink=True,
+                theme=theme,
                 scroll_end=scroll_end,
             )
+            self._hidden_thinking_placeholder_visible = True
+            return
+        self._hidden_thinking_placeholder_visible = False
+        if self._active_thinking_widget is None:
+            self._active_thinking_widget = StreamingTranscriptMessageWidget(
+                ChatItem(role="thinking", text=""),
+                theme=theme,
+            )
+            await self.mount(self._active_thinking_widget)
+        await self._active_thinking_widget.append_fragment(delta)
+        if scroll_end:
+            self.scroll_end(animate=False)
+
+    async def finish_assistant_message(self, text: str | None = None) -> None:
+        """Finalize the active assistant widget after the provider sends the full message."""
+        widget = self._active_assistant_widget
+        if widget is None:
+            if text:
+                await self.append_item(
+                    ChatItem(role="assistant", text=text),
+                    theme=self._render_theme,
+                )
+            return
+        if text is not None and text != widget.selection_text:
+            await widget.replace_text(text)
+        self._active_assistant_widget = None
+
+    @property
+    def lines(self) -> tuple[TranscriptLine, ...]:
+        """Compatibility text view for tests and lightweight transcript inspection."""
+        messages = [
+            child
+            for child in self.children
+            if isinstance(child, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
+        ]
+        return tuple(
+            TranscriptLine(line)
+            for message in messages
+            for line in message.selection_text.splitlines()
+        )
+
+
+def _transcript_widget(
+    item: ChatItem,
+    *,
+    theme: TuiTheme,
+    show_tool_results: bool,
+) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
+    if item.role in {"assistant", "thinking"}:
+        return StreamingTranscriptMessageWidget(item, theme=theme)
+    return TranscriptMessageWidget(
+        item,
+        theme=theme,
+        show_tool_results=show_tool_results,
+    )
+
+
+def transcript_item_selection_text(
+    item: ChatItem,
+    *,
+    show_tool_results: bool = False,
+) -> str:
+    """Return the plain text represented by a selectable transcript item."""
+    return _visible_chat_text(item, show_tool_results=show_tool_results)
+
+
+def _stylize_strip_range(strip: Strip, *, start: int, end: int, style: Any) -> Strip:
+    """Apply a Rich style to a cell range inside a Textual strip."""
+    start = max(start, 0)
+    end = min(end, strip.cell_length)
+    if end <= start:
+        return strip
+    before = strip.crop(0, start)
+    selected = strip.crop(start, end).apply_style(style)
+    after = strip.crop(end, None)
+    return Strip.join([before, selected, after])
+
+
+def _extract_rendered_selection(
+    widget: TranscriptMessageWidget,
+    selection: Selection,
+) -> str | None:
+    lines = _rendered_selection_lines(widget)
+    if not lines:
+        return None
+    selected_lines: list[str] = []
+    for line in lines:
+        span = selection.get_span(line.rendered_y)
+        if span is None:
+            continue
+        start, end = span
+        text_start = max(start - line.rendered_prefix_width, 0)
+        text_end = len(line.text) if end == -1 else max(end - line.rendered_prefix_width, 0)
+        selected_lines.append(line.text[text_start:text_end])
+    return "\n".join(selected_lines)
+
+
+def _rendered_selection_lines(widget: TranscriptMessageWidget) -> list[_RenderedSelectionLine]:
+    if widget.size.height <= 0:
+        return []
+    rendered_lines = [widget.render_line(y).text for y in range(widget.size.height)]
+    content_bounds = _rendered_content_bounds(rendered_lines)
+    if content_bounds is None:
+        return []
+    first_content_line, last_content_line = content_bounds
+    body_prefix_width = _body_prefix_width(rendered_lines[first_content_line])
+    selection_lines: list[_RenderedSelectionLine] = []
+    for rendered_y in range(first_content_line, last_content_line + 1):
+        line = rendered_lines[rendered_y]
+        prefix_width = _line_prefix_width(line, body_prefix_width)
+        selection_lines.append(
+            _RenderedSelectionLine(
+                rendered_y=rendered_y,
+                rendered_prefix_width=prefix_width,
+                text=line[prefix_width:].rstrip(),
+            )
+        )
+    return selection_lines
+
+
+def _rendered_content_bounds(lines: list[str]) -> tuple[int, int] | None:
+    first = next((index for index, line in enumerate(lines) if line.strip()), None)
+    if first is None:
+        return None
+    last = next(
+        index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()
+    )
+    return first, last
+
+
+def _body_prefix_width(first_content_line: str) -> int:
+    if first_content_line.startswith("▌"):
+        if len(first_content_line) > 1 and first_content_line[1] == " ":
+            return 2
+        return 1
+    return len(first_content_line) - len(first_content_line.lstrip(" "))
+
+
+def _line_prefix_width(line: str, body_prefix_width: int) -> int:
+    if line.startswith("▌"):
+        return min(body_prefix_width, len(line))
+    prefix_width = 0
+    while prefix_width < min(body_prefix_width, len(line)) and line[prefix_width] == " ":
+        prefix_width += 1
+    return prefix_width
+
+
+def _extract_text_selection(text: str, selection: Selection) -> str:
+    clipped_selection = _clip_selection_to_text(selection, text)
+    return clipped_selection.extract(text)
+
+
+def _clip_selection_to_text(selection: Selection, text: str) -> Selection:
+    lines = text.splitlines()
+    if not lines:
+        return Selection(Offset(0, 0), Offset(0, 0))
+    return Selection(
+        _clip_selection_offset(selection.start, lines),
+        _clip_selection_offset(selection.end, lines),
+    )
+
+
+def _clip_selection_offset(offset: Offset | None, lines: list[str]) -> Offset | None:
+    if offset is None:
+        return None
+    line_index = min(max(offset.y, 0), len(lines) - 1)
+    column = min(max(offset.x, 0), len(lines[line_index]))
+    return Offset(column, line_index)
 
 
 def render_session_sidebar(
@@ -359,6 +862,10 @@ def _split_tool_invocation(text: str) -> tuple[str, str, str]:
 
 
 def _visible_chat_text(item: ChatItem, *, show_tool_results: bool) -> str:
+    if item.role == "branch_summary":
+        if show_tool_results and item.tool_result_text:
+            return f"**Branch Summary**\n\n{item.tool_result_text}"
+        return item.text
     if item.role != "tool" or not show_tool_results or not item.tool_result_text:
         return item.text
     return f"{item.text}\n\n{item.tool_result_text}"
@@ -379,7 +886,7 @@ def _render_chat_body(
     )
     if patch_body is not None:
         return patch_body
-    if role == "assistant":
+    if role in {"assistant", "thinking", "status"}:
         if _has_unclosed_fence(text):
             return _plain_text(text, body_style=body_style)
         return ThemedMarkdown(

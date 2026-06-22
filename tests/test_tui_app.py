@@ -7,6 +7,8 @@ import pytest
 from rich.console import Console
 from rich.panel import Panel
 from textual.containers import VerticalScroll
+from textual.geometry import Offset
+from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, TextArea
 
 from tau_agent import (
@@ -16,7 +18,9 @@ from tau_agent import (
     AgentToolResult,
     AssistantMessage,
     ErrorEvent,
+    MessageDeltaEvent,
     MessageEndEvent,
+    MessageStartEvent,
     QueueUpdateEvent,
     ToolCall,
     ToolExecutionEndEvent,
@@ -26,7 +30,12 @@ from tau_agent import (
 )
 from tau_coding.commands import CommandResult
 from tau_coding.credentials import OAuthCredential
-from tau_coding.provider_config import OpenAICompatibleProviderConfig, ProviderSettings
+from tau_coding.provider_config import (
+    OpenAICodexProviderConfig,
+    OpenAICompatibleProviderConfig,
+    ProviderSettings,
+    ScopedModelConfig,
+)
 from tau_coding.session import ModelChoice, SessionTreeChoice, TerminalCommandResult
 from tau_coding.session_manager import CodingSessionRecord
 from tau_coding.skills import Skill, format_skill_invocation
@@ -57,12 +66,15 @@ from tau_coding.tui.config import (
 )
 from tau_coding.tui.state import ChatItem
 from tau_coding.tui.widgets import (
+    StreamingTranscriptMessageWidget,
+    TranscriptMessageWidget,
     TranscriptView,
     _compact_token_count,
     _syntax_language,
     render_chat_item,
     render_compact_session_info,
     render_session_sidebar,
+    transcript_item_selection_text,
 )
 
 
@@ -101,10 +113,11 @@ class FakeSession:
         self.session_manager = None
         self.compact_summaries: list[str] = []
         self.resumed_session_ids: list[str] = []
-        self.tree_branch_requests: list[tuple[str, bool]] = []
+        self.tree_branch_requests: list[tuple[str, bool, str | None]] = []
         self.new_session_count = 0
         self.prompt_texts: list[str] = []
         self.reload_count = 0
+        self.provider_reload_count = 0
         self.queued_steering_messages: tuple[str, ...] = ()
         self.queued_follow_up_messages: tuple[str, ...] = ()
         self.streaming_behaviors: list[str | None] = []
@@ -117,6 +130,12 @@ class FakeSession:
             return CommandResult(
                 handled=True,
                 message="Session info",
+            )
+        if text == "/reload":
+            self.reload_count += 1
+            return CommandResult(
+                handled=True,
+                message="Reloaded local coding resources and project context.",
             )
         if text == "/new":
             return CommandResult(handled=True, new_session_requested=True)
@@ -191,6 +210,9 @@ class FakeSession:
     def reload(self) -> None:
         self.reload_count += 1
 
+    def reload_provider_settings(self) -> None:
+        self.provider_reload_count += 1
+
     async def set_thinking_level(self, level: str) -> str:
         self.thinking_level = level
         self.state.thinking_level = level
@@ -226,8 +248,14 @@ class FakeSession:
             SessionTreeChoice(entry_id="right", label="assistant: Right", active=True),
         )
 
-    async def branch_to_entry(self, entry_id: str, *, summarize: bool = False) -> str:
-        self.tree_branch_requests.append((entry_id, summarize))
+    async def branch_to_entry(
+        self,
+        entry_id: str,
+        *,
+        summarize: bool = False,
+        custom_instructions: str | None = None,
+    ) -> str:
+        self.tree_branch_requests.append((entry_id, summarize, custom_instructions))
         self.messages = (UserMessage(content=f"Branched to {entry_id}"),)
         return f"Branched session at {entry_id}."
 
@@ -513,12 +541,15 @@ def test_tool_chat_items_hide_and_show_result_text() -> None:
     assert "full file contents" in expanded
 
 
-def test_thinking_chat_items_use_distinct_style() -> None:
+def test_thinking_chat_items_use_distinct_style_and_markdown() -> None:
     console = Console(record=True, width=80)
 
-    console.print(render_chat_item(ChatItem(role="thinking", text="Hidden reasoning")))
+    console.print(render_chat_item(ChatItem(role="thinking", text="**Plan**\n\nHidden reasoning")))
 
     output = console.export_text(styles=True)
+    plain = console.export_text()
+    assert "Plan" in output
+    assert "**Plan**" not in plain
     assert "Hidden reasoning" in output
     assert "38;2;156;163;175" in output
 
@@ -531,6 +562,44 @@ def test_skill_chat_items_use_distinct_compact_style() -> None:
     output = console.export_text(styles=True)
     assert "Using skill: review" in output
     assert "38;2;229;212;239" in output
+
+
+def test_branch_summary_chat_items_expand_with_tool_results_toggle() -> None:
+    item = ChatItem(
+        role="branch_summary",
+        text="Branch summary (Ctrl+O to expand)",
+        tool_result_text="Detailed summary text",
+    )
+    collapsed_console = Console(record=True, width=80)
+    collapsed_console.print(render_chat_item(item, show_tool_results=False))
+    collapsed = collapsed_console.export_text()
+    expanded_console = Console(record=True, width=80)
+    expanded_console.print(render_chat_item(item, show_tool_results=True))
+    expanded = expanded_console.export_text()
+
+    assert "Branch summary (Ctrl+O to expand)" in collapsed
+    assert "Detailed summary text" not in collapsed
+    assert "Branch Summary" in expanded
+    assert "Detailed summary text" in expanded
+
+
+def test_tui_state_compacts_branch_summary_messages() -> None:
+    state = tui_app.TuiState()
+
+    state.load_messages(
+        [
+            UserMessage(
+                content=(
+                    "The following is a summary of a branch that this conversation "
+                    "came back from:\n<summary>\nImportant context.\n</summary>"
+                )
+            )
+        ]
+    )
+
+    assert [(item.role, item.text, item.tool_result_text) for item in state.items] == [
+        ("branch_summary", "Branch summary (Ctrl+O to expand)", "Important context.")
+    ]
 
 
 def test_tui_state_compacts_expanded_skill_messages() -> None:
@@ -700,6 +769,170 @@ def test_chat_items_preserve_malformed_fenced_code() -> None:
 
     assert "```python" in output
     assert 'print("hi")' in output
+
+
+@pytest.mark.anyio
+async def test_transcript_message_widget_extracts_partial_rendered_selection() -> None:
+    app = TauTuiApp(
+        FakeSession(
+            messages=[
+                UserMessage(content="alpha beta\ngamma"),
+            ]
+        )
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        widget = app.query_one(TranscriptMessageWidget)
+
+        assert widget.get_selection(Selection(Offset(8, 1), Offset(12, 1))) == (
+            "beta",
+            "\n",
+        )
+
+
+@pytest.mark.anyio
+async def test_tui_transcript_selects_only_one_message() -> None:
+    app = TauTuiApp(
+        FakeSession(
+            messages=[
+                UserMessage(content="first message"),
+                AssistantMessage(content="second message"),
+            ]
+        )
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        messages = list(app.query(TranscriptMessageWidget))
+
+        app.screen.selections = {messages[0]: SELECT_ALL}
+
+        assert app.screen.get_selected_text() == "first message"
+
+
+@pytest.mark.anyio
+async def test_tui_transcript_extracts_adjacent_message_selection() -> None:
+    app = TauTuiApp(
+        FakeSession(
+            messages=[
+                UserMessage(content="first one"),
+                AssistantMessage(content="middle message"),
+                UserMessage(content="third item"),
+            ]
+        )
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        messages = list(app.query(TranscriptMessageWidget))
+
+        app.screen.selections = {
+            messages[0]: Selection(Offset(8, 1), None),
+            messages[1]: SELECT_ALL,
+            messages[2]: Selection(None, Offset(7, 1)),
+        }
+
+        assert app.screen.get_selected_text() == "one\nmiddle message\nthird"
+
+
+@pytest.mark.anyio
+async def test_tui_auto_copies_selected_text_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = TauTuiApp(
+        FakeSession(messages=[UserMessage(content="copy this")]),
+        tui_settings=TuiSettings(auto_copy_selection=True),
+    )
+    copied: list[str] = []
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        message = app.query_one(TranscriptMessageWidget)
+        app.screen.selections = {message: SELECT_ALL}
+
+        await app.on_text_selected()
+
+    assert copied == ["copy this"]
+
+
+@pytest.mark.anyio
+async def test_tui_auto_copy_selection_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = TauTuiApp(
+        FakeSession(messages=[UserMessage(content="do not copy")]),
+        tui_settings=TuiSettings(auto_copy_selection=False),
+    )
+    copied: list[str] = []
+    monkeypatch.setattr(app, "copy_to_clipboard", copied.append)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        message = app.query_one(TranscriptMessageWidget)
+        app.screen.selections = {message: SELECT_ALL}
+
+        await app.on_text_selected()
+
+    assert copied == []
+
+
+def test_transcript_selection_text_tracks_tool_result_visibility() -> None:
+    item = ChatItem(
+        role="tool",
+        text="→ read README.md",
+        tool_result_text="✓ read\nREADME contents",
+    )
+
+    assert transcript_item_selection_text(item, show_tool_results=False) == "→ read README.md"
+    assert transcript_item_selection_text(item, show_tool_results=True) == (
+        "→ read README.md\n\n✓ read\nREADME contents"
+    )
+
+
+@pytest.mark.anyio
+async def test_tui_message_start_does_not_mount_empty_assistant_message() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await app._apply_streaming_transcript_event(MessageStartEvent())
+        await pilot.pause()
+
+        assert list(app.query(StreamingTranscriptMessageWidget)) == []
+
+
+@pytest.mark.anyio
+async def test_tui_streaming_deltas_update_active_message_without_full_refresh() -> None:
+    session = FakeSession(
+        events=[
+            AgentStartEvent(),
+            MessageStartEvent(),
+            MessageDeltaEvent(delta="alpha "),
+            MessageDeltaEvent(delta="beta"),
+            MessageEndEvent(message=AssistantMessage(content="alpha beta")),
+            AgentEndEvent(),
+        ]
+    )
+    app = TauTuiApp(session)
+    full_refreshes = 0
+
+    original_refresh = app._refresh
+
+    def tracking_refresh() -> None:
+        nonlocal full_refreshes
+        full_refreshes += 1
+        original_refresh()
+
+    app._refresh = tracking_refresh  # type: ignore[method-assign]
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await app._run_prompt("stream")
+        await pilot.pause()
+
+        transcript = app.query_one("#transcript", TranscriptView)
+        streamed = app.query_one(StreamingTranscriptMessageWidget)
+        transcript_text = "\n".join(line.text for line in transcript.lines)
+
+    assert full_refreshes == 1
+    assert streamed.selection_text == "alpha beta"
+    assert "alpha beta" in transcript_text
 
 
 @pytest.mark.anyio
@@ -1355,6 +1588,26 @@ async def test_tui_app_accepts_file_reference_completion(tmp_path: Path) -> None
 
 
 @pytest.mark.anyio
+async def test_tui_app_accepts_shell_path_completion(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("# Project\n", encoding="utf-8")
+
+    session = FakeSession()
+    session.cwd = tmp_path
+    app = TauTuiApp(session)
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "!cat READ"
+        app._completion_state = app._build_completion_state(prompt.value)
+        app._refresh_completions()
+
+        assert [item.display for item in app._completion_state.items] == ["README.md"]
+        await pilot.press("tab")
+
+        assert prompt.value == "!cat README.md"
+
+
+@pytest.mark.anyio
 async def test_tui_app_completes_skill_name() -> None:
     app = TauTuiApp(FakeSession())
 
@@ -1560,7 +1813,53 @@ async def test_tui_app_tree_picker_branches_with_summary() -> None:
         await pilot.press("s")
         await pilot.pause()
 
-        assert session.tree_branch_requests == [("left", True)]
+        assert session.tree_branch_requests == [("left", True, None)]
+        assert [(item.role, item.text) for item in app.state.items] == [
+            ("user", "Branched to left"),
+        ]
+
+
+@pytest.mark.anyio
+async def test_tui_app_tree_summary_clears_transcript_while_summarizing() -> None:
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    class SlowSummarySession(FakeSession):
+        async def branch_to_entry(
+            self,
+            entry_id: str,
+            *,
+            summarize: bool = False,
+            custom_instructions: str | None = None,
+        ) -> str:
+            self.tree_branch_requests.append((entry_id, summarize, custom_instructions))
+            started.set()
+            await finish.wait()
+            self.messages = (UserMessage(content=f"Branched to {entry_id}"),)
+            return f"Branched session at {entry_id}."
+
+    session = SlowSummarySession(messages=[UserMessage(content="Old thread")])
+    app = TauTuiApp(session)
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/tree"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("up")
+        await pilot.press("s")
+        await pilot.pause()
+        await started.wait()
+
+        assert [(item.role, item.text) for item in app.state.items] == [
+            ("status", "Summarizing branch…"),
+        ]
+
+        finish.set()
+        await pilot.pause()
+
+        assert session.tree_branch_requests == [("left", True, None)]
         assert [(item.role, item.text) for item in app.state.items] == [
             ("user", "Branched to left"),
         ]
@@ -1685,6 +1984,20 @@ async def test_tui_app_deduplicates_active_notifications() -> None:
 
 
 @pytest.mark.anyio
+async def test_tui_app_notifications_render_literal_markup_text() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(notifications=True) as pilot:
+        app._notify("Error: value [type=extra_forbidden]", severity="error")
+        await pilot.pause()
+
+        [notification] = tuple(app._notifications)
+
+    assert notification.message == "Error: value [type=extra_forbidden]"
+    assert notification.markup is False
+
+
+@pytest.mark.anyio
 async def test_tui_app_help_uses_modal_instead_of_transcript() -> None:
     app = TauTuiApp(FakeSession())
 
@@ -1699,6 +2012,27 @@ async def test_tui_app_help_uses_modal_instead_of_transcript() -> None:
         scroll = app.screen.query_one("#command-output-scroll", VerticalScroll)
         assert scroll is not None
         assert app.screen.focused is scroll
+
+
+@pytest.mark.anyio
+async def test_tui_app_reload_appends_command_output_to_transcript() -> None:
+    session = FakeSession()
+    app = TauTuiApp(session)
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/reload"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, CommandOutputScreen)
+        assert session.reload_count == 1
+        assert app.state.items == [
+            ChatItem(
+                role="status",
+                text="/reload\nReloaded local coding resources and project context.",
+            )
+        ]
 
 
 @pytest.mark.anyio
@@ -1912,7 +2246,8 @@ async def test_tui_login_saves_provider_key(
         await pilot.press("enter")
         await pilot.pause()
 
-    assert session.reload_count == 1
+    assert session.reload_count == 0
+    assert session.provider_reload_count == 1
     assert session.provider_name == "openai"
     assert session.prompt_texts == []
     assert all(item.text != "stored-openai-key" for item in app.state.items)
@@ -1951,12 +2286,33 @@ async def test_tui_login_openai_codex_saves_oauth_credentials(
         )
         await pilot.pause()
 
-    assert session.reload_count == 1
+    assert session.reload_count == 0
+    assert session.provider_reload_count == 1
     assert session.provider_name == "openai-codex"
+    assert tui_app.load_provider_settings().default_provider == "openai"
     assert all("access-token" not in item.text for item in app.state.items)
     credentials = (tmp_path / ".tau" / "credentials.json").read_text(encoding="utf-8")
     assert '"type": "oauth"' in credentials
     assert "refresh-token" in credentials
+
+
+@pytest.mark.anyio
+async def test_tui_login_provider_does_not_change_default_startup_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    session = FakeSession()
+    app = TauTuiApp(session)
+    entry = tui_app.builtin_provider_entry("openrouter")
+    assert entry is not None
+
+    async with app.run_test():
+        app._handle_login_result(entry, "stored-openrouter-key")
+
+    assert session.provider_reload_count == 1
+    assert session.provider_name == "openrouter"
+    assert tui_app.load_provider_settings().default_provider == "openai"
 
 
 @pytest.mark.anyio
@@ -2381,6 +2737,7 @@ async def test_tui_app_toggles_thinking_tokens_from_keybinding_while_running() -
 
         assert app.state.show_thinking is False
         assert "final answer" in transcript_text()
+        assert "Thinking… Press Ctrl+T to show thinking tokens." in transcript_text()
         assert "internal plan" not in transcript_text()
 
         await pilot.press("ctrl+t")
@@ -2388,10 +2745,12 @@ async def test_tui_app_toggles_thinking_tokens_from_keybinding_while_running() -
         assert app.state.show_thinking is True
         assert app.state.running is True
         assert "internal plan" in transcript_text()
+        assert "Thinking… Press Ctrl+T to show thinking tokens." not in transcript_text()
 
         await pilot.press("ctrl+t")
         await pilot.pause()
         assert app.state.show_thinking is False
+        assert "Thinking… Press Ctrl+T to show thinking tokens." in transcript_text()
         assert "internal plan" not in transcript_text()
 
     assert notifications == ["Thinking tokens shown.", "Thinking tokens hidden."]
@@ -2631,6 +2990,315 @@ async def test_tui_app_runs_initial_prompt() -> None:
 
 
 @pytest.mark.anyio
+async def test_run_tui_app_falls_back_to_first_credentialed_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    class FakeCredentialStore:
+        def get(self, name: str) -> str | None:
+            return "stored-key" if name == "openai" else None
+
+        def get_oauth(self, name: str) -> object | None:
+            return None
+
+    record = CodingSessionRecord(
+        id="new-session",
+        path=tmp_path / "new-session.jsonl",
+        cwd=tmp_path,
+        model="gpt-5.5",
+        title=None,
+        created_at=1.0,
+        updated_at=1.0,
+        provider_name="openai",
+    )
+
+    class FakeProvider:
+        async def aclose(self) -> None:
+            calls.append("provider_closed")
+
+    class FakeManager:
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            calls.append(f"create:{cwd}:{model}:{provider_name}")
+            return record
+
+        def get_session(self, session_id: str) -> CodingSessionRecord | None:
+            return None
+
+    class FakeCodingSession:
+        @classmethod
+        async def load(cls, config: object) -> str:
+            assert config.provider_name == "openai"  # type: ignore[attr-defined]
+            calls.append("load")
+            return "session"
+
+    class FakeApp:
+        def __init__(self, session: str, **kwargs: object) -> None:
+            assert session == "session"
+            assert kwargs["startup_message"] is None
+
+        async def run_async(self) -> None:
+            calls.append("run")
+
+    settings = ProviderSettings(
+        default_provider="local",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="local",
+                base_url="http://localhost:11434/v1",
+                api_key_env="LOCAL_API_KEY",
+                credential_name=None,
+                models=("qwen",),
+                default_model="qwen",
+            ),
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                credential_name="openai",
+                models=("gpt-5.5",),
+                default_model="gpt-5.5",
+            ),
+        ),
+    )
+    monkeypatch.setattr(tui_app, "FileCredentialStore", lambda: FakeCredentialStore())
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
+    monkeypatch.setattr(
+        tui_app,
+        "create_model_provider",
+        lambda provider, **kwargs: calls.append(f"provider:{provider.name}:{kwargs['model']}")
+        or FakeProvider(),
+    )
+    monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
+    monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+
+    await tui_app.run_tui_app(cwd=tmp_path, model=None, session_manager=FakeManager())
+
+    assert calls == [
+        "provider:openai:gpt-5.5",
+        f"create:{tmp_path}:gpt-5.5:openai",
+        "load",
+        "run",
+        "provider_closed",
+    ]
+
+
+@pytest.mark.anyio
+async def test_run_tui_app_ignores_latest_directory_provider_model_for_new_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    latest_record = CodingSessionRecord(
+        id="latest-session",
+        path=tmp_path / "latest-session.jsonl",
+        cwd=tmp_path / "other",
+        model="gpt-5.5",
+        title=None,
+        created_at=1.0,
+        updated_at=1.0,
+        provider_name="openai-codex",
+    )
+    created_record = CodingSessionRecord(
+        id="new-session",
+        path=tmp_path / "new-session.jsonl",
+        cwd=tmp_path,
+        model="gpt-5",
+        title=None,
+        created_at=2.0,
+        updated_at=2.0,
+        provider_name="openai",
+    )
+
+    class FakeProvider:
+        async def aclose(self) -> None:
+            calls.append("provider_closed")
+
+    class FakeManager:
+        def latest_session_for_cwd(self, cwd: Path) -> CodingSessionRecord | None:
+            calls.append(f"latest:{cwd}")
+            return latest_record
+
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            calls.append(f"create:{cwd}:{model}:{provider_name}")
+            return created_record
+
+        def get_session(self, session_id: str) -> CodingSessionRecord | None:
+            return None
+
+    class FakeCodingSession:
+        @classmethod
+        async def load(cls, config: object) -> str:
+            assert config.provider_name == "openai"  # type: ignore[attr-defined]
+            assert config.model == "gpt-5"  # type: ignore[attr-defined]
+            calls.append("load")
+            return "session"
+
+    class FakeApp:
+        def __init__(self, session: str, **kwargs: object) -> None:
+            assert session == "session"
+
+        async def run_async(self) -> None:
+            calls.append("run")
+
+    settings = ProviderSettings(
+        default_provider="openai",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                models=("gpt-5",),
+                default_model="gpt-5",
+            ),
+            OpenAICodexProviderConfig(
+                name="openai-codex",
+                models=("gpt-5.5",),
+                default_model="gpt-5.5",
+            ),
+        ),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "stored-key")
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
+    monkeypatch.setattr(
+        tui_app,
+        "create_model_provider",
+        lambda provider, **kwargs: calls.append(f"provider:{provider.name}:{kwargs['model']}")
+        or FakeProvider(),
+    )
+    monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
+    monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
+
+    await tui_app.run_tui_app(cwd=tmp_path, model=None, session_manager=FakeManager())
+
+    assert calls == [
+        "provider:openai:gpt-5",
+        f"create:{tmp_path}:gpt-5:openai",
+        "load",
+        "run",
+        "provider_closed",
+    ]
+
+
+@pytest.mark.anyio
+async def test_run_tui_app_does_not_start_new_session_from_scoped_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+    latest = CodingSessionRecord(
+        id="latest-session",
+        path=tmp_path / "latest-session.jsonl",
+        cwd=tmp_path,
+        model="gpt-5.5",
+        title=None,
+        created_at=1.0,
+        updated_at=1.0,
+        provider_name="openai",
+    )
+    record = CodingSessionRecord(
+        id="new-session",
+        path=tmp_path / "new-session.jsonl",
+        cwd=tmp_path,
+        model="gpt-5.5",
+        title=None,
+        created_at=2.0,
+        updated_at=2.0,
+        provider_name="openai-codex",
+    )
+
+    class FakeProvider:
+        async def aclose(self) -> None:
+            calls.append("provider_closed")
+
+    class FakeCredentialStore:
+        def get(self, name: str) -> str | None:
+            return None
+
+        def get_oauth(self, name: str) -> object | None:
+            return object() if name == "openai-codex" else None
+
+    class FakeManager:
+        def latest_session_for_cwd(self, cwd: Path) -> CodingSessionRecord | None:
+            calls.append(f"latest:{cwd}")
+            return latest
+
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            calls.append(f"create:{cwd}:{model}:{provider_name}")
+            return record
+
+        def get_session(self, session_id: str) -> CodingSessionRecord | None:
+            return None
+
+    class FakeCodingSession:
+        @classmethod
+        async def load(cls, config: object) -> str:
+            assert config.provider_name == "openai"  # type: ignore[attr-defined]
+            calls.append("load")
+            return "session"
+
+    class FakeApp:
+        def __init__(self, session: str, **kwargs: object) -> None:
+            assert session == "session"
+
+        async def run_async(self) -> None:
+            calls.append("run")
+
+    settings = ProviderSettings(
+        default_provider="openai",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="openai",
+                models=("gpt-5.5",),
+                default_model="gpt-5.5",
+            ),
+            OpenAICodexProviderConfig(
+                name="openai-codex",
+                models=("gpt-5.5",),
+                default_model="gpt-5.5",
+            ),
+        ),
+        scoped_models=(ScopedModelConfig(provider="openai-codex", model="gpt-5.5"),),
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "stored-key")
+    monkeypatch.setattr(tui_app, "FileCredentialStore", lambda: FakeCredentialStore())
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
+    monkeypatch.setattr(
+        tui_app,
+        "create_model_provider",
+        lambda provider, **kwargs: calls.append(f"provider:{provider.name}:{kwargs['model']}")
+        or FakeProvider(),
+    )
+    monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
+    monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+
+    await tui_app.run_tui_app(cwd=tmp_path, model=None, session_manager=FakeManager())
+
+    assert calls == [
+        "provider:openai:gpt-5.5",
+        f"create:{tmp_path}:gpt-5.5:openai",
+        "load",
+        "run",
+        "provider_closed",
+    ]
+
+
+@pytest.mark.anyio
 async def test_run_tui_app_creates_new_session_by_default(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -2650,8 +3318,14 @@ async def test_run_tui_app_creates_new_session_by_default(
             calls.append("provider_closed")
 
     class FakeManager:
-        def create_session(self, *, cwd: Path, model: str) -> CodingSessionRecord:
-            calls.append(f"create:{cwd}:{model}")
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            calls.append(f"create:{cwd}:{model}:{provider_name}")
             return record
 
         def get_session(self, session_id: str) -> CodingSessionRecord | None:
@@ -2698,6 +3372,7 @@ async def test_run_tui_app_creates_new_session_by_default(
     )
     monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
     monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
 
     await tui_app.run_tui_app(
         model=None,
@@ -2708,7 +3383,7 @@ async def test_run_tui_app_creates_new_session_by_default(
         session_manager=FakeManager(),
     )
 
-    assert calls == [f"create:{tmp_path}:local-model", "load", "run", "provider_closed"]
+    assert calls == [f"create:{tmp_path}:local-model:local", "load", "run", "provider_closed"]
 
 
 @pytest.mark.anyio
@@ -2727,8 +3402,14 @@ async def test_run_tui_app_opens_when_provider_login_is_missing(
     )
 
     class FakeManager:
-        def create_session(self, *, cwd: Path, model: str) -> CodingSessionRecord:
-            calls.append(f"create:{cwd}:{model}")
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            calls.append(f"create:{cwd}:{model}:{provider_name}")
             return record
 
         def get_session(self, session_id: str) -> CodingSessionRecord | None:
@@ -2760,10 +3441,11 @@ async def test_run_tui_app_opens_when_provider_login_is_missing(
     )
     monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
     monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
 
     await tui_app.run_tui_app(cwd=tmp_path, model=None, session_manager=FakeManager())
 
-    assert calls == [f"create:{tmp_path}:gpt-5.5", "load:LoginRequiredProvider", "run"]
+    assert calls == [f"create:{tmp_path}:gpt-5.5:openai", "load:LoginRequiredProvider", "run"]
 
 
 @pytest.mark.anyio
@@ -2786,7 +3468,13 @@ async def test_run_tui_app_resumes_explicit_session(
             calls.append("provider_closed")
 
     class FakeManager:
-        def create_session(self, *, cwd: Path, model: str) -> CodingSessionRecord:
+        def create_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
             raise AssertionError("explicit resume should not create a new session")
 
         def get_session(self, session_id: str) -> CodingSessionRecord | None:
@@ -2816,6 +3504,7 @@ async def test_run_tui_app_resumes_explicit_session(
     )
     monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
     monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
 
     await tui_app.run_tui_app(
         model="fake-model",

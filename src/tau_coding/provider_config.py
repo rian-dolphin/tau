@@ -22,6 +22,7 @@ from tau_coding.thinking import (
     DEFAULT_THINKING_LEVEL,
     ThinkingLevel,
     ThinkingParameter,
+    anthropic_thinking_budget_for_level,
     normalize_thinking_level,
     normalize_thinking_levels,
     reasoning_effort_for_level,
@@ -132,10 +133,6 @@ class AnthropicProviderConfig:
             thinking_default=self.thinking_default,
             thinking_parameter=self.thinking_parameter,
         )
-        _reject_unimplemented_thinking_config(
-            provider_type="Anthropic",
-            thinking_levels=self.thinking_levels,
-        )
 
     def to_json(self) -> dict[str, Any]:
         """Serialize this provider config to JSON-compatible data."""
@@ -200,10 +197,6 @@ class OpenAICodexProviderConfig:
             thinking_models=self.thinking_models,
             thinking_default=self.thinking_default,
             thinking_parameter=self.thinking_parameter,
-        )
-        _reject_unimplemented_thinking_config(
-            provider_type="OpenAI Codex subscription",
-            thinking_levels=self.thinking_levels,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -369,6 +362,26 @@ def save_provider_settings(settings: ProviderSettings, paths: TauPaths | None = 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dumps(settings.to_json(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path
+
+
+def set_default_provider_model(
+    settings: ProviderSettings,
+    *,
+    provider_name: str,
+    model: str,
+) -> ProviderSettings:
+    """Return settings with the default provider/model preference updated."""
+    provider = settings.get_provider(provider_name)
+    models = provider.models if model in provider.models else (*provider.models, model)
+    updated_provider = replace(provider, models=models, default_model=model)
+    providers = tuple(
+        updated_provider if item.name == provider_name else item for item in settings.providers
+    )
+    return ProviderSettings(
+        default_provider=provider_name,
+        providers=providers,
+        scoped_models=settings.scoped_models,
+    )
 
 
 def upsert_openai_compatible_provider(
@@ -540,6 +553,26 @@ def provider_thinking_levels(
     return provider.thinking_levels
 
 
+def provider_thinking_unavailable_reason(
+    provider: ProviderConfig,
+    *,
+    model: str | None = None,
+) -> str | None:
+    """Explain why a provider/model pair has no configurable thinking modes."""
+    selected_model = model or provider.default_model
+    if provider.thinking_levels is None:
+        if isinstance(provider, OpenAICodexProviderConfig):
+            return (
+                "OpenAI Codex subscription can stream reasoning output, but Tau does "
+                "not have a validated Codex transport mapping for changing reasoning "
+                "effort yet"
+            )
+        return f"Provider {provider.name} does not declare thinking_levels"
+    if provider.thinking_models and selected_model not in provider.thinking_models:
+        return f"{provider.name}:{selected_model} is not declared in thinking_models"
+    return None
+
+
 def provider_default_thinking_level(
     provider: ProviderConfig,
     *,
@@ -581,6 +614,7 @@ def openai_compatible_config_from_provider(
         max_retries=provider.max_retries,
         max_retry_delay_seconds=provider.max_retry_delay_seconds,
         reasoning_effort=reasoning_effort,
+        reasoning_effort_parameter=provider.thinking_parameter or "reasoning_effort",
     )
 
 
@@ -588,9 +622,14 @@ def anthropic_config_from_provider(
     provider: AnthropicProviderConfig,
     *,
     credential_reader: CredentialReader | None = None,
+    thinking_level: ThinkingLevel | None = None,
 ) -> AnthropicConfig:
     """Build Anthropic runtime config from durable settings."""
     api_key = _api_key_from_provider(provider, credential_reader=credential_reader)
+    thinking_budget_tokens = _anthropic_thinking_budget_from_provider(
+        provider,
+        thinking_level=thinking_level,
+    )
     return AnthropicConfig(
         api_key=api_key,
         base_url=provider.base_url.rstrip("/"),
@@ -598,6 +637,7 @@ def anthropic_config_from_provider(
         timeout_seconds=provider.timeout_seconds,
         max_retries=provider.max_retries,
         max_retry_delay_seconds=provider.max_retry_delay_seconds,
+        thinking_budget_tokens=thinking_budget_tokens,
     )
 
 
@@ -632,7 +672,10 @@ def _reasoning_effort_from_provider(
     model: str | None,
     thinking_level: ThinkingLevel | None,
 ) -> str | None:
-    if thinking_level is None or provider.thinking_parameter != "reasoning_effort":
+    if thinking_level is None or provider.thinking_parameter not in {
+        "reasoning_effort",
+        "reasoning.effort",
+    }:
         return None
 
     levels = provider_thinking_levels(provider, model=model)
@@ -648,6 +691,28 @@ def _reasoning_effort_from_provider(
             f"{provider.name}:{selected_model}. Available modes: {available}"
         )
     return reasoning_effort_for_level(normalized)
+
+
+def _anthropic_thinking_budget_from_provider(
+    provider: AnthropicProviderConfig,
+    *,
+    thinking_level: ThinkingLevel | None,
+) -> int | None:
+    if thinking_level is None or provider.thinking_parameter != "anthropic.thinking":
+        return None
+
+    levels = provider_thinking_levels(provider)
+    if not levels:
+        return None
+
+    normalized = normalize_thinking_level(thinking_level)
+    if normalized not in levels:
+        available = ", ".join(levels)
+        raise ProviderConfigError(
+            f"Thinking mode {normalized} is not available for "
+            f"{provider.name}:{provider.default_model}. Available modes: {available}"
+        )
+    return anthropic_thinking_budget_for_level(normalized)
 
 
 def _provider_from_json(data: object) -> ProviderConfig:
@@ -822,8 +887,16 @@ def _validate_thinking_config(
         raise ProviderConfigError("Provider thinking_models must contain non-empty strings")
     if thinking_default is not None and thinking_default not in thinking_levels:
         raise ProviderConfigError("Provider thinking_default must be in thinking_levels")
-    if thinking_parameter not in {None, "reasoning_effort"}:
-        raise ProviderConfigError("Provider thinking_parameter must be reasoning_effort")
+    if thinking_parameter not in {
+        None,
+        "reasoning_effort",
+        "reasoning.effort",
+        "anthropic.thinking",
+    }:
+        raise ProviderConfigError(
+            "Provider thinking_parameter must be reasoning_effort, reasoning.effort, "
+            "or anthropic.thinking"
+        )
 
 
 def _reject_unimplemented_thinking_config(
@@ -904,7 +977,14 @@ def _optional_thinking_parameter(
         return None
     if value == "reasoning_effort":
         return "reasoning_effort"
-    raise ProviderConfigError(f"Provider field must be reasoning_effort: {field_name}")
+    if value == "reasoning.effort":
+        return "reasoning.effort"
+    if value == "anthropic.thinking":
+        return "anthropic.thinking"
+    raise ProviderConfigError(
+        f"Provider field must be reasoning_effort, reasoning.effort, "
+        f"or anthropic.thinking: {field_name}"
+    )
 
 
 def _string_dict(value: object, field_name: str) -> dict[str, str]:

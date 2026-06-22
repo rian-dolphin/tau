@@ -235,8 +235,10 @@ in the `/resume` picker and in session-id completions.
 
 `/tree` opens the current session tree. Select an earlier entry with `Enter` to
 continue from that point while preserving the existing branch. Press `S` instead
-to add a branch summary for the messages left behind before Tau moves the active
-leaf.
+to ask the active model for a structured branch summary of the messages left
+behind before Tau moves the active leaf. Press `C` to provide custom focus
+instructions for that one summary. If the summary request is unavailable or
+fails, Tau falls back to the deterministic summary formatter.
 
 ## Skills and Prompt Templates
 
@@ -292,6 +294,9 @@ Useful TUI commands:
 /theme tau-light
 ```
 
+`/reload` refreshes local coding resources and project instruction context for
+future turns. Provider settings are refreshed by `/login` and `/model` instead.
+
 In the TUI, `Shift-Tab` cycles the active thinking mode by default. `Ctrl+T`
 toggles display of streamed thinking/reasoning tokens when the active provider
 emits them. Thinking tokens are hidden by default and can be remapped in
@@ -313,12 +318,26 @@ to context/history. Terminal input commands use the same shell execution,
 output truncation, failure reporting, and timeout assumptions as Tau's built-in
 `bash` tool.
 
+In the TUI, terminal input commands complete relative files and directories from
+the session working directory. Press `Tab` while typing a path such as
+`!cat README` or `!!cat src/ma` to insert the matching filename; directory
+matches include a trailing `/` so you can keep typing the next path segment.
+
 Thinking controls are model-aware. Tau enables them only when the active
 provider configuration declares supported levels for the active model. Custom
 OpenAI-compatible providers can opt in by adding `thinking_levels`,
 `thinking_default`, and `thinking_parameter: "reasoning_effort"` to their
-provider entry. Add `thinking_models` when only some configured models support
-those levels.
+provider entry. Providers that use the nested Responses API shape can use
+`thinking_parameter: "reasoning.effort"`; Anthropic configs use
+`thinking_parameter: "anthropic.thinking"`. Add `thinking_models` when only
+some configured models support those levels. When adding new built-in models,
+validate whether each model supports the chosen thinking parameter before adding
+it to `thinking_models`.
+
+When controls are unavailable, the TUI shows `unavailable` in the session
+summary and failed thinking-cycle attempts include the reason. `/session` also
+prints the reason, for example when the active provider does not declare
+`thinking_levels` or when the active model is not listed in `thinking_models`.
 
 Typing `@` in the TUI prompt opens file-reference suggestions for the current
 session working directory. Suggestions include matching files and directories
@@ -358,3 +377,6 @@ tau --auto-compact-threshold 100000
 
 See [Context Compaction](context-compaction.md) for what Tau counts, when it
 compacts, how much recent context it keeps, and the exact summary prompt.
+
+Tree-branch summaries created with `S` use their own active-model summary path
+with deterministic fallback.

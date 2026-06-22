@@ -51,6 +51,10 @@ class SessionState:
         custom_entries: list[CustomEntry] = []
         compaction_entries: list[CompactionEntry] = []
 
+        latest_branch_summary_index = _latest_branch_summary_index(replay_entries)
+        if latest_branch_summary_index is not None:
+            replay_entries = replay_entries[latest_branch_summary_index:]
+
         for entry in replay_entries:
             match entry.type:
                 case "message":
@@ -89,6 +93,14 @@ class SessionState:
         )
 
 
+def _latest_branch_summary_index(entries: list[SessionEntry]) -> int | None:
+    """Return the index of the most recent branch summary on a replay path."""
+    for index in range(len(entries) - 1, -1, -1):
+        if entries[index].type == "branch_summary":
+            return index
+    return None
+
+
 def _apply_compaction(
     message_rows: list[tuple[str, AgentMessage]],
     entry: CompactionEntry,
@@ -116,5 +128,7 @@ def _format_compaction_summary(summary: str) -> str:
 
 
 def _format_branch_summary(entry: BranchSummaryEntry) -> str:
-    branch_root = entry.branch_root_id or "root"
-    return f"Previous branch summary from {branch_root}:\n{entry.summary}"
+    return (
+        "The following is a summary of a branch that this conversation came back from:\n"
+        f"<summary>\n{entry.summary}\n</summary>"
+    )

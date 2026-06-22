@@ -188,15 +188,16 @@ def test_session_state_replays_branch_summary_as_context_summary() -> None:
     state = SessionState.from_entries([root, summary], leaf_id="branch-summary")
 
     assert state.messages == (
-        UserMessage(content="Root"),
         UserMessage(
             content=(
-                "Previous branch summary from root:\n"
-                "The abandoned branch explored an alternate implementation."
+                "The following is a summary of a branch that this conversation came back from:\n"
+                "<summary>\n"
+                "The abandoned branch explored an alternate implementation.\n"
+                "</summary>"
             )
         ),
     )
-    assert state.context_entry_ids == ("root", "branch-summary")
+    assert state.context_entry_ids == ("branch-summary",)
 
 
 def test_path_to_entry_returns_root_to_leaf_branch() -> None:

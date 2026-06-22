@@ -8,6 +8,7 @@ from typing import Protocol
 from tau_agent.tools import AgentTool
 from tau_coding.prompt_templates import PromptTemplate
 from tau_coding.provider_catalog import BUILTIN_PROVIDER_CATALOG, builtin_provider_entry
+from tau_coding.reload import CodingReloadSummary, ReloadCategorySummary
 from tau_coding.resources import ResourceDiagnostic
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.skills import Skill
@@ -73,7 +74,9 @@ class CommandSession(Protocol):
 
     def set_model(self, model: str) -> None: ...
 
-    def reload(self) -> None: ...
+    def reload(self) -> CodingReloadSummary: ...
+
+    def reload_provider_settings(self) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,7 +243,7 @@ def create_default_command_registry() -> CommandRegistry:
         SlashCommand(
             name="reload",
             usage="/reload",
-            description="Reload resources and provider configuration.",
+            description="Reload local resources and project context.",
             handler=_reload_command,
         )
     )
@@ -355,17 +358,16 @@ def _status_command(context: CommandContext) -> CommandResult:
         f"Context files: {len(session.context_files)}",
         f"Estimated context tokens: {session.context_token_estimate}",
         f"Context window: {session.context_window_tokens}",
-        f"Thinking mode: {session.thinking_level}",
-        f"Resource diagnostics: {len(session.resource_diagnostics)}",
     ]
     if context_usage is not None:
-        lines.insert(
-            -1,
+        lines.append(
             "Context token breakdown: "
             f"system={context_usage.system_tokens}, "
             f"messages={context_usage.message_tokens}, "
             f"tools={context_usage.tool_tokens}",
         )
+    lines.extend(_thinking_status_lines(session))
+    lines.append(f"Resource diagnostics: {len(session.resource_diagnostics)}")
     if session.auto_compact_token_threshold is not None:
         lines.append(f"Auto compact threshold: {session.auto_compact_token_threshold}")
     if session.session_id is not None:
@@ -427,21 +429,13 @@ def _resources_command(context: CommandContext) -> CommandResult:
 
 def _reload_command(context: CommandContext) -> CommandResult:
     try:
-        context.session.reload()
+        summary = context.session.reload()
     except ValueError as exc:
         return CommandResult(handled=True, message=f"Could not reload: {exc}")
 
-    session = context.session
     return CommandResult(
         handled=True,
-        message=(
-            "Reloaded resources and provider configuration.\n"
-            f"Skills: {len(session.skills)}\n"
-            f"Prompt templates: {len(session.prompt_templates)}\n"
-            f"Context files: {len(session.context_files)}\n"
-            f"Providers: {len(session.available_providers)}\n"
-            f"Resource diagnostics: {len(session.resource_diagnostics)}"
-        ),
+        message=_format_reload_summary(summary),
     )
 
 
@@ -512,7 +506,12 @@ def _name_command(context: CommandContext) -> CommandResult:
     except ValueError as exc:
         return CommandResult(handled=True, message=str(exc))
 
-    updated = manager.touch_session(session_id, model=context.session.model, title=name)
+    updated = manager.touch_session(
+        session_id,
+        model=context.session.model,
+        provider_name=context.session.provider_name,
+        title=name,
+    )
     if updated is None:
         return CommandResult(handled=True, message=f"Unknown current session: {session_id}")
     return CommandResult(handled=True, message=f"Session renamed: {updated.title}")
@@ -534,6 +533,10 @@ def _format_sessions(context: CommandContext) -> str:
 
 
 def _model_command(context: CommandContext) -> CommandResult:
+    refresh_error = _refresh_provider_settings(context.session)
+    if refresh_error is not None:
+        return refresh_error
+
     if context.args:
         model = context.args.strip()
         available_models = set(context.session.available_models)
@@ -551,6 +554,10 @@ def _model_command(context: CommandContext) -> CommandResult:
 
 
 def _scoped_models_command(context: CommandContext) -> CommandResult:
+    refresh_error = _refresh_provider_settings(context.session)
+    if refresh_error is not None:
+        return refresh_error
+
     if context.args:
         return CommandResult(handled=True, message="Usage: /scoped-models")
     return CommandResult(handled=True, scoped_models_picker_requested=True)
@@ -560,26 +567,21 @@ def _thinking_command(context: CommandContext) -> CommandResult:
     session = context.session
     available = tuple(session.available_thinking_levels)
     if not context.args:
-        if not available:
-            return CommandResult(
-                handled=True,
-                message=(
-                    "Thinking controls: unavailable\n"
-                    f"Current model: {session.provider_name}:{session.model}"
-                ),
-            )
-        lines = [
-            f"Thinking mode: {session.thinking_level}",
-            f"Available modes: {', '.join(available)}",
-        ]
+        lines = _thinking_status_lines(session)
+        if available:
+            lines.append(f"Available modes: {', '.join(available)}")
+        else:
+            lines.insert(1, f"Current model: {session.provider_name}:{session.model}")
         return CommandResult(handled=True, message="\n".join(lines))
 
     if not available:
+        message = f"Thinking controls are unavailable for {session.provider_name}:{session.model}"
+        reason = _thinking_unavailable_reason(session)
+        if reason:
+            message = f"{message}: {reason}"
         return CommandResult(
             handled=True,
-            message=(
-                f"Thinking controls are unavailable for {session.provider_name}:{session.model}"
-            ),
+            message=message,
         )
     try:
         level = normalize_thinking_level(context.args)
@@ -596,6 +598,21 @@ def _thinking_command(context: CommandContext) -> CommandResult:
             ),
         )
     return CommandResult(handled=True, thinking_level=level)
+
+
+def _thinking_status_lines(session: CommandSession) -> list[str]:
+    if tuple(session.available_thinking_levels):
+        return [f"Thinking mode: {session.thinking_level}"]
+    lines = ["Thinking mode: unavailable"]
+    reason = _thinking_unavailable_reason(session)
+    if reason:
+        lines.append(f"Thinking unavailable: {reason}")
+    return lines
+
+
+def _thinking_unavailable_reason(session: CommandSession) -> str | None:
+    reason = getattr(session, "thinking_unavailable_reason", None)
+    return reason if isinstance(reason, str) and reason else None
 
 
 def _theme_command(context: CommandContext) -> CommandResult:
@@ -643,6 +660,48 @@ def _format_diagnostics(
     lines = ["Resource diagnostics:"]
     lines.extend(f"- {diagnostic.format()}" for diagnostic in filtered)
     return lines
+
+
+def _refresh_provider_settings(session: CommandSession) -> CommandResult | None:
+    try:
+        session.reload_provider_settings()
+    except ValueError as exc:
+        return CommandResult(
+            handled=True,
+            message=f"Could not refresh provider settings: {exc}",
+        )
+    return None
+
+
+def _format_reload_summary(summary: CodingReloadSummary) -> str:
+    lines = [
+        "Reloaded local coding resources and project context.",
+        "Resources:",
+        f"- Skills: {_format_reload_category(summary.skills)}",
+        f"- Prompt templates: {_format_reload_category(summary.prompt_templates)}",
+        "Context:",
+        f"- Project context files: {_format_reload_category(summary.context_files)}",
+        "- Next-turn system prompt: "
+        + ("rebuilt" if summary.system_prompt_rebuilt else "unchanged"),
+        "Diagnostics:",
+        f"- Resource diagnostics: {_format_reload_category(summary.diagnostics)}",
+        "Provider config:",
+        "- Not refreshed by /reload; use /login or /model for provider/model settings.",
+    ]
+    return "\n".join(lines)
+
+
+def _format_reload_category(summary: ReloadCategorySummary) -> str:
+    status = "changed" if summary.changed else "unchanged"
+    delta = _format_count_delta(summary.delta)
+    suffix = f", {delta}" if delta is not None else ""
+    return f"{summary.after} total ({status}{suffix})"
+
+
+def _format_count_delta(delta: int) -> str | None:
+    if delta == 0:
+        return None
+    return f"{delta:+d}"
 
 
 def _parse_command(text: str) -> tuple[str, str]:

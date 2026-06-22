@@ -21,10 +21,12 @@ from tau_coding.provider_config import (
     AnthropicProviderConfig,
     OpenAICodexProviderConfig,
     ProviderConfig,
+    ProviderConfigError,
     anthropic_config_from_provider,
     openai_compatible_config_from_provider,
+    provider_thinking_levels,
 )
-from tau_coding.thinking import ThinkingLevel
+from tau_coding.thinking import ThinkingLevel, normalize_thinking_level, reasoning_effort_for_level
 
 
 class ClosableModelProvider(ModelProvider, Protocol):
@@ -46,7 +48,11 @@ def create_model_provider(
     credentials = credential_store or FileCredentialStore()
     if isinstance(provider, AnthropicProviderConfig):
         return AnthropicProvider(
-            anthropic_config_from_provider(provider, credential_reader=credentials)
+            anthropic_config_from_provider(
+                provider,
+                credential_reader=credentials,
+                thinking_level=thinking_level,
+            )
         )
     if isinstance(provider, OpenAICodexProviderConfig):
         return OpenAICodexProvider(
@@ -60,6 +66,11 @@ def create_model_provider(
                 timeout_seconds=provider.timeout_seconds,
                 max_retries=provider.max_retries,
                 max_retry_delay_seconds=provider.max_retry_delay_seconds,
+                reasoning_effort=_codex_reasoning_effort(
+                    provider,
+                    model=model,
+                    thinking_level=thinking_level,
+                ),
             )
         )
     return OpenAICompatibleProvider(
@@ -70,6 +81,32 @@ def create_model_provider(
             thinking_level=thinking_level,
         )
     )
+
+
+def _codex_reasoning_effort(
+    provider: OpenAICodexProviderConfig,
+    *,
+    model: str | None,
+    thinking_level: ThinkingLevel | None,
+) -> str | None:
+    if thinking_level is None or provider.thinking_parameter != "reasoning.effort":
+        return None
+    levels = provider_thinking_levels(provider, model=model)
+    if not levels:
+        return None
+    normalized = normalize_thinking_level(thinking_level)
+    if normalized not in levels:
+        selected_model = model or provider.default_model
+        available = ", ".join(levels)
+        raise ProviderConfigError(
+            f"Thinking mode {normalized} is not available for "
+            f"{provider.name}:{selected_model}. Available modes: {available}"
+        )
+    if normalized == "off":
+        return None
+    if normalized == "minimal":
+        return "low"
+    return reasoning_effort_for_level(normalized)
 
 
 class OpenAICodexCredentialResolver:

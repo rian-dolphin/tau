@@ -18,6 +18,7 @@ from tau_coding.provider_config import (
     provider_has_usable_credentials,
     provider_settings_from_json,
     provider_thinking_levels,
+    provider_thinking_unavailable_reason,
     resolve_provider_selection,
     save_provider_settings,
     upsert_openai_compatible_provider,
@@ -45,6 +46,9 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
     settings = ProviderSettings()
     openai = settings.get_provider("openai")
     openrouter = settings.get_provider("openrouter")
+    huggingface = settings.get_provider("huggingface")
+    codex = settings.get_provider("openai-codex")
+    anthropic = settings.get_provider("anthropic")
 
     assert openai.context_windows["gpt-5.5"] == 272_000
     assert openai.context_windows["gpt-5.5-pro"] == 1_050_000
@@ -58,8 +62,50 @@ def test_builtin_openai_declares_model_scoped_thinking_capabilities() -> None:
         "xhigh",
     )
     assert provider_default_thinking_level(openai, model="gpt-5.5") == "medium"
+    assert provider_thinking_unavailable_reason(openai, model="gpt-5.5") is None
     assert provider_thinking_levels(openai, model="gpt-4.1") == ()
-    assert provider_thinking_levels(openrouter, model="openai/gpt-5.5") == ()
+    assert (
+        provider_thinking_unavailable_reason(openai, model="gpt-4.1")
+        == "openai:gpt-4.1 is not declared in thinking_models"
+    )
+    assert provider_thinking_levels(openrouter, model="openai/gpt-5.5") == (
+        "off",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+    assert provider_thinking_unavailable_reason(openrouter, model="openai/gpt-5.5") is None
+    assert provider_thinking_levels(openrouter, model="anthropic/claude-sonnet-4.6") == ()
+    assert provider_thinking_unavailable_reason(
+        openrouter,
+        model="anthropic/claude-sonnet-4.6",
+    ) == "openrouter:anthropic/claude-sonnet-4.6 is not declared in thinking_models"
+    assert provider_thinking_levels(huggingface, model="openai/gpt-oss-120b") == (
+        "low",
+        "medium",
+        "high",
+    )
+    assert provider_thinking_unavailable_reason(huggingface, model="openai/gpt-oss-120b") is None
+    assert provider_thinking_levels(codex, model="gpt-5.5") == (
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+    assert provider_thinking_unavailable_reason(codex, model="gpt-5.5") is None
+    assert provider_thinking_levels(anthropic, model="claude-sonnet-4-6") == (
+        "off",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+    )
+    assert provider_thinking_unavailable_reason(anthropic, model="claude-sonnet-4-6") is None
+    assert provider_thinking_levels(anthropic, model="claude-haiku-4-5") == ()
 
 
 def test_save_and_load_provider_settings_round_trip(tmp_path: Path) -> None:
@@ -405,6 +451,56 @@ def test_anthropic_config_from_provider_uses_stored_credential(
     assert config.base_url == "https://api.anthropic.com/v1"
 
 
+def test_anthropic_config_from_provider_sets_thinking_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    provider = AnthropicProviderConfig(
+        thinking_levels=("off", "low", "high"),
+        thinking_default="low",
+        thinking_parameter="anthropic.thinking",
+    )
+
+    off_config = anthropic_config_from_provider(provider, thinking_level="off")
+    high_config = anthropic_config_from_provider(provider, thinking_level="high")
+
+    assert off_config.thinking_budget_tokens is None
+    assert high_config.thinking_budget_tokens == 8192
+
+
+@pytest.mark.parametrize(
+    ("parameter", "expected"),
+    [
+        ("reasoning_effort", "reasoning_effort"),
+        ("reasoning.effort", "reasoning.effort"),
+    ],
+)
+def test_openai_compatible_config_from_provider_sets_reasoning_parameter(
+    monkeypatch: pytest.MonkeyPatch,
+    parameter: str,
+    expected: str,
+) -> None:
+    monkeypatch.setenv("LOCAL_API_KEY", "test-key")
+    provider = OpenAICompatibleProviderConfig(
+        name="local",
+        base_url="http://localhost:11434/v1/",
+        api_key_env="LOCAL_API_KEY",
+        models=("reasoner",),
+        default_model="reasoner",
+        thinking_levels=("low", "high"),
+        thinking_parameter=parameter,  # type: ignore[arg-type]
+    )
+
+    config = openai_compatible_config_from_provider(
+        provider,
+        model="reasoner",
+        thinking_level="high",
+    )
+
+    assert config.reasoning_effort == "high"
+    assert config.reasoning_effort_parameter == expected
+
+
 def test_provider_settings_from_json_loads_headers() -> None:
     settings = provider_settings_from_json(
         {
@@ -486,24 +582,35 @@ def test_provider_settings_from_json_loads_openai_codex_provider() -> None:
     assert provider.headers == {"X-Test": "enabled"}
 
 
-def test_provider_settings_from_json_rejects_unimplemented_thinking_provider() -> None:
-    with pytest.raises(ProviderConfigError, match="Anthropic thinking controls"):
-        provider_settings_from_json(
-            {
-                "default_provider": "anthropic",
-                "providers": [
-                    {
-                        "type": "anthropic",
-                        "name": "anthropic",
-                        "base_url": "https://api.anthropic.com/v1",
-                        "api_key_env": "ANTHROPIC_API_KEY",
-                        "models": ["claude-sonnet-4-6"],
-                        "default_model": "claude-sonnet-4-6",
-                        "thinking_levels": ["low", "high"],
-                    }
-                ],
-            }
-        )
+def test_provider_settings_from_json_loads_anthropic_thinking_provider() -> None:
+    settings = provider_settings_from_json(
+        {
+            "default_provider": "anthropic",
+            "providers": [
+                {
+                    "type": "anthropic",
+                    "name": "anthropic",
+                    "base_url": "https://api.anthropic.com/v1",
+                    "api_key_env": "ANTHROPIC_API_KEY",
+                    "models": ["claude-sonnet-4-6"],
+                    "default_model": "claude-sonnet-4-6",
+                    "thinking_levels": ["off", "low", "high"],
+                    "thinking_models": ["claude-sonnet-4-6"],
+                    "thinking_parameter": "anthropic.thinking",
+                }
+            ],
+        }
+    )
+
+    provider = settings.get_provider("anthropic")
+
+    assert isinstance(provider, AnthropicProviderConfig)
+    assert provider_thinking_levels(provider, model="claude-sonnet-4-6") == (
+        "off",
+        "low",
+        "high",
+    )
+    assert provider.thinking_parameter == "anthropic.thinking"
 
 
 def test_load_provider_settings_merges_builtin_model_catalog(tmp_path: Path) -> None:

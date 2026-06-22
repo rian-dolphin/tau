@@ -120,6 +120,18 @@ def test_tui_settings_accept_light_theme() -> None:
     assert settings.resolved_theme.syntax_theme == "ansi_light"
 
 
+def test_tui_settings_load_auto_copy_selection() -> None:
+    settings = tui_settings_from_json({"auto_copy_selection": True})
+
+    assert settings.auto_copy_selection is True
+    assert settings.to_json()["auto_copy_selection"] is True
+
+
+def test_tui_settings_reject_invalid_auto_copy_selection() -> None:
+    with pytest.raises(TuiConfigError, match="auto_copy_selection"):
+        tui_settings_from_json({"auto_copy_selection": "yes"})
+
+
 def test_tui_keybindings_serialize_to_json() -> None:
     settings = TuiSettings(
         keybindings=TuiKeybindings(
@@ -145,6 +157,7 @@ def test_tui_keybindings_serialize_to_json() -> None:
     assert settings.to_json()["keybindings"]["model_cycle"] == "f6"
     assert settings.to_json()["keybindings"]["copy_message"] == "ctrl+b"
     assert settings.to_json()["theme"] == "high-contrast"
+    assert settings.to_json()["auto_copy_selection"] is False
 
 
 def test_get_tui_theme_returns_builtin_theme() -> None:
