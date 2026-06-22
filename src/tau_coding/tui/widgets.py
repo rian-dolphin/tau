@@ -22,6 +22,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.events import Resize
 from textual.geometry import Offset
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import Markdown as TextualMarkdown
 from textual.widgets import Static
 from textual.widgets.markdown import MarkdownStream
@@ -155,6 +156,25 @@ class TranscriptMessageWidget(Static):
             classes="transcript-message",
         )
 
+    def render_line(self, y: int) -> Strip:
+        """Render one line with Textual selection offsets and selection styling."""
+        strip = super().render_line(y).apply_offsets(0, y)
+        selection = self.text_selection
+        if selection is None:
+            return strip
+        span = selection.get_span(y)
+        if span is None:
+            return strip
+        start, end = span
+        if end == -1:
+            end = strip.cell_length
+        return _stylize_strip_range(
+            strip,
+            start=start,
+            end=end,
+            style=self.screen.get_visual_style("screen--selection").rich_style,
+        )
+
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text from this message, not the whole transcript."""
         selected_text = _extract_rendered_selection(self, selection)
@@ -238,6 +258,12 @@ class StreamingTranscriptMessageWidget(Vertical):
         if not selected_text:
             return None
         return selected_text, "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        """Refresh markdown children so Textual can paint live selection spans."""
+        super().selection_updated(selection)
+        if self._markdown is not None:
+            self._markdown.selection_updated(selection)
 
 
 class TranscriptView(VerticalScroll):
@@ -478,6 +504,18 @@ def transcript_item_selection_text(
 ) -> str:
     """Return the plain text represented by a selectable transcript item."""
     return _visible_chat_text(item, show_tool_results=show_tool_results)
+
+
+def _stylize_strip_range(strip: Strip, *, start: int, end: int, style: Any) -> Strip:
+    """Apply a Rich style to a cell range inside a Textual strip."""
+    start = max(start, 0)
+    end = min(end, strip.cell_length)
+    if end <= start:
+        return strip
+    before = strip.crop(0, start)
+    selected = strip.crop(start, end).apply_style(style)
+    after = strip.crop(end, None)
+    return Strip.join([before, selected, after])
 
 
 def _extract_rendered_selection(
