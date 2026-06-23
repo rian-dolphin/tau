@@ -1467,6 +1467,8 @@ class TauTuiApp(App[None]):
         border: none;
         background: $tau-transcript-background;
         padding: 0 1 0 0;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     #queued-messages {

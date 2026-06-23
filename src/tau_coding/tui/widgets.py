@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from subprocess import TimeoutExpired, run
-from typing import Any, Protocol, cast
+from typing import Any, Protocol
 
 from pygments.lexers import get_lexer_by_name  # type: ignore[import-untyped]
 from pygments.util import ClassNotFound  # type: ignore[import-untyped]
@@ -13,18 +13,15 @@ from rich.console import Console, Group, RenderableType
 from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.rule import Rule
-from rich.segment import Segment
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 from rich.theme import Theme
-from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.content import Content
+from textual.containers import Horizontal, VerticalScroll
 from textual.events import Resize
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.strip import Strip
 from textual.widgets import Markdown as TextualMarkdown
 from textual.widgets import Static
 from textual.widgets.markdown import MarkdownStream
@@ -44,15 +41,6 @@ TAU_SIDEBAR_LOGO = "τ = 2π"
 class TranscriptLine:
     """Plain transcript line used by compatibility inspection helpers."""
 
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class _RenderedSelectionLine:
-    """One rendered transcript line mapped back to copyable body text."""
-
-    rendered_y: int
-    rendered_prefix_width: int
     text: str
 
 
@@ -119,9 +107,6 @@ class CompactSessionInfo(Static):
         self.update(render_compact_session_info(session, theme=theme))
 
 
-_SELECTABLE_MARKDOWN_BLOCKS: dict[type[Any], type[Any]] = {}
-
-
 class NonSelectableStatic(Static):
     """Static display text that should not participate in mouse selection."""
 
@@ -131,68 +116,49 @@ class NonSelectableStatic(Static):
 class ThemedMarkdownWidget(TextualMarkdown):
     """Textual Markdown widget reserved for Tau transcript streaming."""
 
-    def __init__(self, markdown: str | None = None, *, theme: TuiTheme) -> None:
+    def __init__(
+        self,
+        markdown: str | None = None,
+        *,
+        theme: TuiTheme,
+        classes: str | None = None,
+    ) -> None:
         del theme
-        super().__init__(markdown)
-
-    def get_block_class(self, block_name: str) -> type[Any]:
-        """Return Markdown blocks that expose per-cell selection offsets."""
-        return _selectable_markdown_block_class(super().get_block_class(block_name))
+        super().__init__(markdown, classes=classes)
 
 
-def _selectable_markdown_block_class(block_class: type[Any]) -> type[Any]:
-    cached = _SELECTABLE_MARKDOWN_BLOCKS.get(block_class)
-    if cached is not None:
-        return cached
-
-    class SelectableMarkdownBlock(block_class):  # type: ignore[misc]
-        """Markdown block with live Textual selection painting."""
-
-        def render_line(self, y: int) -> Strip:
-            strip = cast(Strip, super().render_line(y)).apply_offsets(0, y)
-            selection = self.text_selection
-            if selection is None:
-                return strip
-            span = selection.get_span(y)
-            if span is None:
-                return strip
-            start, end = span
-            if end == -1:
-                end = strip.cell_length
-            return _stylize_strip_range(
-                strip,
-                start=start,
-                end=end,
-                style=self.screen.get_visual_style("screen--selection").rich_style,
-            )
-
-        def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-            visual = self._render()
-            text = str(visual) if isinstance(visual, Text | Content) else self.source
-            if text is None:
-                return None
-            selected_text = _extract_visual_line_selection(
-                [self.render_line(y) for y in range(self.size.height)],
-                selection,
-            )
-            if selected_text is None:
-                selected_text = _extract_text_selection(text, selection)
-            if not selected_text:
-                return None
-            return selected_text, "\n"
-
-    SelectableMarkdownBlock.__name__ = f"Selectable{block_class.__name__}"
-    _SELECTABLE_MARKDOWN_BLOCKS[block_class] = SelectableMarkdownBlock
-    return SelectableMarkdownBlock
-
-
-class TranscriptMessageWidget(Static):
-    """One selectable transcript message block."""
+class TranscriptMessageWidget(Horizontal):
+    """One selectable transcript message with a non-selectable visual gutter."""
 
     DEFAULT_CSS = """
     TranscriptMessageWidget {
         width: 1fr;
         height: auto;
+        margin: 1 1 2 0;
+    }
+
+    TranscriptMessageWidget > .transcript-message-gutter {
+        width: 1;
+        height: auto;
+    }
+
+    TranscriptMessageWidget > .transcript-message-body {
+        width: 1fr;
+        height: auto;
+        padding: 0 1 0 1;
+    }
+
+    TranscriptMessageWidget > .transcript-message-body > MarkdownParagraph {
+        margin: 0;
+    }
+
+    TranscriptMessageWidget > .transcript-message-body > MarkdownFence {
+        margin: 0;
+        background: transparent;
+    }
+
+    TranscriptMessageWidget > .transcript-message-body > MarkdownFence > Label {
+        padding: 0;
     }
     """
 
@@ -208,70 +174,47 @@ class TranscriptMessageWidget(Static):
             item,
             show_tool_results=show_tool_results,
         )
-        super().__init__(
-            render_chat_item(
-                item,
-                theme=theme,
-                show_tool_results=show_tool_results,
-            ),
-            expand=True,
-            shrink=True,
-            markup=False,
-            classes="transcript-message",
+        self._markdown_text = _transcript_item_markdown(
+            item,
+            show_tool_results=show_tool_results,
         )
+        self._theme = theme
+        self._role_style = _chat_item_role_style(item, theme)
+        super().__init__(classes="transcript-message")
 
-    def render_line(self, y: int) -> Strip:
-        """Render one line with Textual selection offsets and selection styling."""
-        strip = super().render_line(y).apply_offsets(0, y)
-        selection = self.text_selection
-        if selection is None:
-            return strip
-        span = selection.get_span(y)
-        if span is None:
-            return strip
-        start, end = span
-        if end == -1:
-            end = strip.cell_length
-        return _stylize_strip_range(
-            strip,
-            start=start,
-            end=end,
-            style=self.screen.get_visual_style("screen--selection").rich_style,
+    def compose(self) -> Any:
+        gutter = NonSelectableStatic("▌", classes="transcript-message-gutter")
+        gutter.styles.color = self._role_style.border
+        body = ThemedMarkdownWidget(
+            self._markdown_text,
+            theme=self._theme,
+            classes="transcript-message-body",
         )
+        foreground, background = _split_rich_style_colors(self._role_style.body)
+        if foreground:
+            body.styles.color = foreground
+        if background:
+            body.styles.background = background
+        yield gutter
+        yield body
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
-        """Return selected text from this message, not the whole transcript."""
-        selected_text = _extract_rendered_selection(self, selection)
-        if selected_text is None:
-            selected_text = _extract_text_selection(self.selection_text, selection)
+        """Return selected plain text from this message, not rendered Markdown markup."""
+        selected_text = _extract_text_selection(self.selection_text, selection)
         if not selected_text:
             return None
         return selected_text, "\n"
 
 
-class StreamingTranscriptMessageWidget(Vertical):
-    """One assistant or thinking message block that accepts streamed fragments."""
+class StreamingTranscriptMessageWidget(ThemedMarkdownWidget):
+    """One assistant or thinking Markdown block that accepts streamed fragments."""
 
     DEFAULT_CSS = """
     StreamingTranscriptMessageWidget {
         width: 1fr;
         height: auto;
-        margin: 1 1 1 0;
-    }
-
-    StreamingTranscriptMessageWidget > .streaming-message-row {
-        height: auto;
-    }
-
-    StreamingTranscriptMessageWidget > .streaming-message-row > .streaming-message-gutter {
-        width: 1;
-        height: auto;
-    }
-
-    StreamingTranscriptMessageWidget > .streaming-message-row > ThemedMarkdownWidget {
-        width: 1fr;
-        height: auto;
-        padding: 0 1 0 1;
+        margin: 1 1 2 1;
+        padding: 0 1 0 0;
     }
     """
 
@@ -280,24 +223,14 @@ class StreamingTranscriptMessageWidget(Vertical):
             raise ValueError("Streaming transcript widgets only support assistant/thinking items")
         self.item = item
         self.selection_text = item.text
-        self._theme = theme
-        self._markdown: ThemedMarkdownWidget | None = None
         self._stream: MarkdownStream | None = None
-        super().__init__(classes="transcript-message")
-
-    def compose(self) -> Any:
-        self._markdown = ThemedMarkdownWidget(self.item.text, theme=self._theme)
-        with Horizontal(classes="streaming-message-row"):
-            yield NonSelectableStatic("▌", classes="streaming-message-gutter")
-            yield self._markdown
+        super().__init__(item.text, theme=theme)
+        self.add_class("transcript-message")
 
     @property
     def stream(self) -> MarkdownStream:
-        markdown = self._markdown
-        if markdown is None:
-            raise RuntimeError("Streaming transcript widget is not mounted")
         if self._stream is None:
-            self._stream = markdown.get_stream(markdown)
+            self._stream = self.get_stream(self)
         return self._stream
 
     async def append_fragment(self, fragment: str) -> None:
@@ -312,9 +245,8 @@ class StreamingTranscriptMessageWidget(Vertical):
         """Replace the current markdown text, usually with the final provider message."""
         self.item.text = text
         self.selection_text = text
-        if self._markdown is not None:
-            self._stream = None
-            await self._markdown.update(text)
+        self._stream = None
+        await self.update(text)
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         """Return selected text from this streamed message block."""
@@ -322,12 +254,6 @@ class StreamingTranscriptMessageWidget(Vertical):
         if not selected_text:
             return None
         return selected_text, "\n"
-
-    def selection_updated(self, selection: Selection | None) -> None:
-        """Refresh markdown children so Textual can paint live selection spans."""
-        super().selection_updated(selection)
-        if self._markdown is not None:
-            self._markdown.selection_updated(selection)
 
 
 class TranscriptView(VerticalScroll):
@@ -583,103 +509,39 @@ def transcript_item_selection_text(
     return _visible_chat_text(item, show_tool_results=show_tool_results)
 
 
-def _stylize_strip_range(strip: Strip, *, start: int, end: int, style: Any) -> Strip:
-    """Apply a Rich style to a cell range inside a Textual strip."""
-    start = max(start, 0)
-    end = min(end, strip.cell_length)
-    if end <= start:
-        return strip
-    before = strip.crop(0, start)
-    selected_strip = strip.crop(start, end)
-    selected = Strip(
-        list(Segment.apply_style(selected_strip, post_style=style)),
-        selected_strip.cell_length,
-    )
-    after = strip.crop(end, None)
-    return Strip.join([before, selected, after])
+def _split_rich_style_colors(style: str) -> tuple[str | None, str | None]:
+    """Split the foreground/background colors from a simple Rich style string."""
+    text_style = Style.parse(style)
+    foreground = text_style.color.name if text_style.color is not None else None
+    background = text_style.bgcolor.name if text_style.bgcolor is not None else None
+    return foreground, background
 
 
-def _extract_rendered_selection(
-    widget: TranscriptMessageWidget,
-    selection: Selection,
-) -> str | None:
-    lines = _rendered_selection_lines(widget)
-    if not lines:
-        return None
-    selected_lines: list[str] = []
-    for line in lines:
-        span = selection.get_span(line.rendered_y)
-        if span is None:
-            continue
-        start, end = span
-        text_start = max(start - line.rendered_prefix_width, 0)
-        text_end = len(line.text) if end == -1 else max(end - line.rendered_prefix_width, 0)
-        selected_lines.append(line.text[text_start:text_end])
-    return "\n".join(selected_lines)
+def _transcript_item_markdown(
+    item: ChatItem,
+    *,
+    show_tool_results: bool,
+) -> str:
+    """Return Markdown for a transcript item using native Textual Markdown blocks."""
+    visible_text = _visible_chat_text(item, show_tool_results=show_tool_results)
+    if item.role in {"assistant", "thinking", "status", "branch_summary", "compaction_summary"}:
+        return visible_text
+    return _plain_markdown(visible_text)
 
 
-def _extract_visual_line_selection(lines: list[Strip], selection: Selection) -> str | None:
-    if not lines:
-        return None
-    selected_lines: list[str] = []
-    for line_y, line in enumerate(lines):
-        span = selection.get_span(line_y)
-        if span is None:
-            continue
-        start, end = span
-        line_end = line.cell_length if end == -1 else max(end, 0)
-        selected_lines.append(line.crop(max(start, 0), line_end).text.rstrip())
-    if not selected_lines:
-        return None
-    return "\n".join(selected_lines)
+def _plain_markdown(text: str) -> str:
+    """Represent arbitrary plain text as wrapping Markdown paragraphs."""
+    if not text:
+        return ""
+    return "\n".join(_escape_plain_markdown_line(line) for line in text.splitlines())
 
 
-def _rendered_selection_lines(widget: TranscriptMessageWidget) -> list[_RenderedSelectionLine]:
-    if widget.size.height <= 0:
-        return []
-    rendered_lines = [widget.render_line(y).text for y in range(widget.size.height)]
-    content_bounds = _rendered_content_bounds(rendered_lines)
-    if content_bounds is None:
-        return []
-    first_content_line, last_content_line = content_bounds
-    body_prefix_width = _body_prefix_width(rendered_lines[first_content_line])
-    selection_lines: list[_RenderedSelectionLine] = []
-    for rendered_y in range(first_content_line, last_content_line + 1):
-        line = rendered_lines[rendered_y]
-        prefix_width = _line_prefix_width(line, body_prefix_width)
-        selection_lines.append(
-            _RenderedSelectionLine(
-                rendered_y=rendered_y,
-                rendered_prefix_width=prefix_width,
-                text=line[prefix_width:].rstrip(),
-            )
-        )
-    return selection_lines
-
-
-def _rendered_content_bounds(lines: list[str]) -> tuple[int, int] | None:
-    first = next((index for index, line in enumerate(lines) if line.strip()), None)
-    if first is None:
-        return None
-    last = next(index for index in range(len(lines) - 1, -1, -1) if lines[index].strip())
-    return first, last
-
-
-def _body_prefix_width(first_content_line: str) -> int:
-    if first_content_line.startswith("▌"):
-        if len(first_content_line) > 1 and first_content_line[1] == " ":
-            return 2
-        return 1
-    return len(first_content_line) - len(first_content_line.lstrip(" "))
-
-
-def _line_prefix_width(line: str, body_prefix_width: int) -> int:
-    if line.startswith("▌"):
-        return min(body_prefix_width, len(line))
-    prefix_width = 0
-    while prefix_width < min(body_prefix_width, len(line)) and line[prefix_width] == " ":
-        prefix_width += 1
-    return prefix_width
+def _escape_plain_markdown_line(line: str) -> str:
+    """Escape Markdown syntax while preserving plain, wrapping text."""
+    escaped = line.replace("\\", "\\\\")
+    for character in "`*_{}[]()#+-.!|>":
+        escaped = escaped.replace(character, f"\\{character}")
+    return escaped
 
 
 def _extract_text_selection(text: str, selection: Selection) -> str:
