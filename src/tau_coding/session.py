@@ -243,6 +243,8 @@ class CodingSession:
             )
             entries = [info, model, thinking]
             pending_initial_entries = (info, model, thinking)
+        else:
+            entries = _detach_missing_parents(entries)
 
         linear_state = SessionState.from_entries(entries)
         state = (
@@ -370,7 +372,7 @@ class CodingSession:
 
     async def tree_choices(self) -> tuple[SessionTreeChoice, ...]:
         """Return branchable session entries for a tree picker."""
-        entries = await self._config.storage.read_all()
+        entries = await self._read_session_entries()
         branch_indents = _tree_branch_indents(entries)
         return tuple(
             SessionTreeChoice(
@@ -392,7 +394,7 @@ class CodingSession:
         replace_instructions: bool = False,
     ) -> str:
         """Move the active leaf to a previous entry, preserving existing history."""
-        entries = await self._config.storage.read_all()
+        entries = await self._read_session_entries()
         by_id = {entry.id: entry for entry in entries}
         if entry_id not in by_id:
             raise ValueError(f"Unknown session entry: {entry_id}")
@@ -471,7 +473,7 @@ class CodingSession:
         format: str | None = None,
     ) -> Path:
         """Export the current session to a user-facing artifact."""
-        entries = await self._config.storage.read_all()
+        entries = await self._read_session_entries()
         session_path = _storage_path(self._config.storage)
         export_format = normalize_export_format(
             format or (destination.suffix.removeprefix(".") if destination else "html")
@@ -1195,7 +1197,7 @@ class CodingSession:
         return persisted_count + len(new_messages)
 
     async def _refresh_persisted_state(self, *, leaf_id: str | None = None) -> None:
-        entries = await self._config.storage.read_all()
+        entries = await self._read_session_entries()
         self._state = SessionState.from_entries(entries, leaf_id=leaf_id)
         if self._config.session_id is not None and self._config.session_manager is not None:
             self._config.session_manager.touch_session(
@@ -1203,6 +1205,10 @@ class CodingSession:
                 model=self.model,
                 provider_name=self.provider_name,
             )
+
+    async def _read_session_entries(self) -> list[SessionEntry]:
+        """Read stored entries, detaching roots imported from external history."""
+        return _detach_missing_parents(await self._config.storage.read_all())
 
     async def _append_session_entry(self, entry: SessionEntry) -> None:
         """Append one durable entry after flushing deferred session metadata."""
@@ -1457,6 +1463,17 @@ def _is_context_overflow_error(event: ErrorEvent) -> bool:
         "exceeded the limit",
     )
     return any(marker in normalized for marker in markers)
+
+
+def _detach_missing_parents(entries: list[SessionEntry]) -> list[SessionEntry]:
+    """Return entries with dangling parent pointers detached from external history."""
+    entry_ids = {entry.id for entry in entries}
+    return [
+        entry.model_copy(update={"parent_id": None})
+        if entry.parent_id is not None and entry.parent_id not in entry_ids
+        else entry
+        for entry in entries
+    ]
 
 
 def _last_parent_id_from_state(state: SessionState) -> str | None:

@@ -64,6 +64,7 @@ from tau_coding.tui.app import (
 from tau_coding.tui.autocomplete import CompletionItem, CompletionState
 from tau_coding.tui.config import (
     HIGH_CONTRAST_THEME,
+    TAU_DARK_THEME,
     TAU_LIGHT_THEME,
     TuiKeybindings,
     TuiSettings,
@@ -76,6 +77,7 @@ from tau_coding.tui.widgets import (
     TranscriptView,
     _compact_token_count,
     _syntax_language,
+    _transcript_plain_body_text,
     render_chat_item,
     render_compact_session_info,
     render_session_sidebar,
@@ -562,6 +564,63 @@ def test_tool_chat_items_hide_and_show_result_text() -> None:
     assert "full file contents" in expanded
 
 
+EDIT_TOOL_RESULT_WITH_PATCH = (
+    "✓ edit\n"
+    "Successfully replaced 1 block.\n"
+    "\n"
+    "Patch:\n"
+    "--- a/README.md\n"
+    "+++ b/README.md\n"
+    "@@\n"
+    "-old\n"
+    "+new"
+)
+
+
+def test_expanded_edit_tool_result_renders_patch_as_colored_diff() -> None:
+    item = ChatItem(
+        role="tool",
+        text="→ edit README.md",
+        tool_result_text=EDIT_TOOL_RESULT_WITH_PATCH,
+    )
+
+    console = Console(record=True, width=100, color_system="truecolor")
+    console.print(render_chat_item(item, show_tool_results=True))
+
+    plain = console.export_text(clear=False)
+    styled = console.export_text(styles=True)
+    assert "Patch:" in plain
+    assert "-old" in plain
+    assert "+new" in plain
+    assert "\x1b[91;49m-old" in styled
+    assert "\x1b[92;49m+new" in styled
+
+
+def test_transcript_plain_tool_body_renders_patch_as_colored_diff() -> None:
+    item = ChatItem(
+        role="tool",
+        text="→ edit README.md",
+        tool_result_text=EDIT_TOOL_RESULT_WITH_PATCH,
+    )
+    body = _transcript_plain_body_text(
+        item,
+        text=transcript_item_selection_text(item, show_tool_results=True),
+        body_style="#cbd5e1 on #000000",
+        theme=TAU_DARK_THEME,
+    )
+
+    console = Console(record=True, width=100, color_system="truecolor")
+    console.print(body)
+
+    plain = console.export_text(clear=False)
+    styled = console.export_text(styles=True)
+    assert "Patch:" in plain
+    assert "-old" in plain
+    assert "+new" in plain
+    assert "\x1b[91;49m-old" in styled
+    assert "\x1b[92;49m+new" in styled
+
+
 def test_thinking_chat_items_use_distinct_style_and_markdown() -> None:
     console = Console(record=True, width=80)
 
@@ -882,8 +941,9 @@ def test_chat_items_preserve_malformed_fenced_code() -> None:
     assert 'print("hi")' in output
 
 
+
 @pytest.mark.anyio
-async def test_transcript_message_widget_extracts_partial_rendered_selection() -> None:
+async def test_transcript_message_widget_extracts_plain_text_selection() -> None:
     app = TauTuiApp(
         FakeSession(
             messages=[
@@ -896,10 +956,35 @@ async def test_transcript_message_widget_extracts_partial_rendered_selection() -
         await pilot.pause()
         widget = app.query_one(TranscriptMessageWidget)
 
-        assert widget.get_selection(Selection(Offset(8, 1), Offset(12, 1))) == (
+        assert widget.get_selection(Selection(Offset(6, 0), Offset(10, 0))) == (
             "beta",
             "\n",
         )
+
+
+@pytest.mark.anyio
+async def test_streaming_transcript_deltas_do_not_force_scroll_end() -> None:
+    app = TauTuiApp(FakeSession(messages=[]))
+
+    async with app.run_test(size=(40, 20)) as pilot:
+        await pilot.pause()
+        transcript = app.query_one("#transcript", TranscriptView)
+        forced_scrolls = 0
+        original_scroll_end = transcript.scroll_end
+
+        def tracking_scroll_end(*args: object, **kwargs: object) -> None:
+            nonlocal forced_scrolls
+            forced_scrolls += 1
+            original_scroll_end(*args, **kwargs)
+
+        transcript.scroll_end = tracking_scroll_end  # type: ignore[method-assign]
+
+        await transcript.append_assistant_delta("alpha")
+        await transcript.append_assistant_delta(" beta")
+        await pilot.pause()
+
+    assert forced_scrolls == 0
+
 
 
 @pytest.mark.anyio
@@ -939,9 +1024,9 @@ async def test_tui_transcript_extracts_adjacent_message_selection() -> None:
         messages = list(app.query(TranscriptMessageWidget))
 
         app.screen.selections = {
-            messages[0]: Selection(Offset(8, 1), None),
+            messages[0]: Selection(Offset(6, 0), None),
             messages[1]: SELECT_ALL,
-            messages[2]: Selection(None, Offset(7, 1)),
+            messages[2]: Selection(None, Offset(5, 0)),
         }
 
         assert app.screen.get_selected_text() == "one\nmiddle message\nthird"
@@ -999,6 +1084,28 @@ def test_transcript_selection_text_tracks_tool_result_visibility() -> None:
 
 
 @pytest.mark.anyio
+async def test_tool_transcript_uses_native_markdown_without_custom_selection_painting() -> None:
+    app = TauTuiApp(FakeSession(messages=[]))
+    item = ChatItem(
+        role="tool",
+        text="→ read README.md",
+        tool_result_text="✓ read\nREADME contents",
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        transcript = app.query_one("#transcript", TranscriptView)
+        widget = await transcript.append_item(item, show_tool_results=True)
+        await pilot.pause()
+
+        assert isinstance(widget, TranscriptMessageWidget)
+        assert widget.get_selection(SELECT_ALL) == (
+            "→ read README.md\n\n✓ read\nREADME contents",
+            "\n",
+        )
+        assert list(widget.query("MarkdownFence")) == []
+
+
+@pytest.mark.anyio
 async def test_tui_message_start_does_not_mount_empty_assistant_message() -> None:
     app = TauTuiApp(FakeSession())
 
@@ -1022,6 +1129,17 @@ async def test_tui_streaming_deltas_update_active_message_without_full_refresh()
         ]
     )
     app = TauTuiApp(session)
+    stream_replacements: list[str] = []
+    original_replace_text = StreamingTranscriptMessageWidget.replace_text
+
+    async def tracking_replace_text(
+        self: StreamingTranscriptMessageWidget,
+        text: str,
+    ) -> None:
+        stream_replacements.append(text)
+        await original_replace_text(self, text)
+
+    StreamingTranscriptMessageWidget.replace_text = tracking_replace_text  # type: ignore[method-assign]
     full_refreshes = 0
 
     original_refresh = app._refresh
@@ -1033,15 +1151,19 @@ async def test_tui_streaming_deltas_update_active_message_without_full_refresh()
 
     app._refresh = tracking_refresh  # type: ignore[method-assign]
 
-    async with app.run_test(size=(120, 30)) as pilot:
-        await app._run_prompt("stream")
-        await pilot.pause()
+    try:
+        async with app.run_test(size=(120, 30)) as pilot:
+            await app._run_prompt("stream")
+            await pilot.pause()
 
-        transcript = app.query_one("#transcript", TranscriptView)
-        streamed = app.query_one(StreamingTranscriptMessageWidget)
-        transcript_text = "\n".join(line.text for line in transcript.lines)
+            transcript = app.query_one("#transcript", TranscriptView)
+            streamed = app.query_one(StreamingTranscriptMessageWidget)
+            transcript_text = "\n".join(line.text for line in transcript.lines)
+    finally:
+        StreamingTranscriptMessageWidget.replace_text = original_replace_text  # type: ignore[method-assign]
 
     assert full_refreshes == 1
+    assert stream_replacements == ["alpha beta"]
     assert streamed.selection_text == "alpha beta"
     assert "alpha beta" in transcript_text
 
@@ -3074,6 +3196,31 @@ async def test_tui_app_marks_failed_terminal_command_as_error() -> None:
     assert session.prompt_texts == []
     assert app.state.items[-1].text == "$ false"
     assert app.state.items[-1].tool_result_text == "✗ bash · not added to context\nfailed"
+
+
+@pytest.mark.anyio
+async def test_tui_app_marks_terminal_command_exception_as_failed() -> None:
+    session = FakeSession()
+    app = TauTuiApp(session)
+
+    async def fake_run_terminal_command(
+        command: str,
+        *,
+        add_to_context: bool,
+    ) -> TerminalCommandResult:
+        del command, add_to_context
+        raise RuntimeError("boom")
+
+    session.run_terminal_command = fake_run_terminal_command  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "!! false"
+        await pilot.press("enter")
+        await pilot.pause()
+
+    assert app.state.items[-1].text == "$ false"
+    assert app.state.items[-1].tool_result_text == "✗ bash · not added to context\nboom"
 
 
 @pytest.mark.anyio

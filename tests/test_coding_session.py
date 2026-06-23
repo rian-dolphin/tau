@@ -622,6 +622,60 @@ async def test_load_restores_existing_transcript(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
+async def test_load_detaches_missing_root_parent_from_imported_branch(tmp_path: Path) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    root = MessageEntry(
+        id="root",
+        parent_id="missing-external-parent",
+        message=UserMessage(content="Root"),
+    )
+    assistant = MessageEntry(
+        id="assistant",
+        parent_id="root",
+        message=AssistantMessage(content="Restored"),
+    )
+    await storage.append(root)
+    await storage.append(assistant)
+    await storage.append(LeafEntry(entry_id="assistant"))
+
+    session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
+
+    assert session.messages == (
+        UserMessage(content="Root"),
+        AssistantMessage(content="Restored"),
+    )
+    assert session.state.active_leaf_id == "assistant"
+
+
+@pytest.mark.anyio
+async def test_tree_branching_detaches_missing_root_parent_from_imported_branch(
+    tmp_path: Path,
+) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    root = MessageEntry(
+        id="root",
+        parent_id="missing-external-parent",
+        message=UserMessage(content="Root"),
+    )
+    assistant = MessageEntry(
+        id="assistant",
+        parent_id="root",
+        message=AssistantMessage(content="Restored"),
+    )
+    await storage.append(root)
+    await storage.append(assistant)
+    await storage.append(LeafEntry(parent_id="assistant", entry_id="assistant"))
+
+    session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
+    choices = await session.tree_choices()
+    result = await session.branch_to_entry("root")
+
+    assert [choice.entry_id for choice in choices] == ["root", "assistant"]
+    assert result == "Branched session at root."
+    assert session.messages == (UserMessage(content="Root"),)
+
+
+@pytest.mark.anyio
 async def test_load_restores_active_leaf_branch(tmp_path: Path) -> None:
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
     root = MessageEntry(id="root", message=UserMessage(content="Root"))
