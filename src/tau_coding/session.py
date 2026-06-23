@@ -242,6 +242,8 @@ class CodingSession:
             )
             entries = [info, model, thinking]
             pending_initial_entries = (info, model, thinking)
+        else:
+            entries = _detach_missing_parents(entries)
 
         linear_state = SessionState.from_entries(entries)
         state = (
@@ -1451,6 +1453,17 @@ def _is_context_overflow_error(event: ErrorEvent) -> bool:
         "exceeded the limit",
     )
     return any(marker in normalized for marker in markers)
+
+
+def _detach_missing_parents(entries: list[SessionEntry]) -> list[SessionEntry]:
+    """Return entries with dangling parent pointers detached from external history."""
+    entry_ids = {entry.id for entry in entries}
+    return [
+        entry.model_copy(update={"parent_id": None})
+        if entry.parent_id is not None and entry.parent_id not in entry_ids
+        else entry
+        for entry in entries
+    ]
 
 
 def _last_parent_id_from_state(state: SessionState) -> str | None:
