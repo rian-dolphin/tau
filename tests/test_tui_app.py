@@ -2668,25 +2668,25 @@ async def test_tui_app_queues_steering_prompt_while_running() -> None:
     async with app.run_test() as pilot:
         app.state.running = True
         prompt = app.query_one("#prompt", TextArea)
-        prompt.text = "adjust course"
+        prompt.text = "adjust course\nwith extra detail"
 
         await pilot.press("enter")
         await pilot.pause()
 
         queued_messages = app.query_one("#queued-messages")
         assert prompt.text == ""
-        assert session.prompt_texts == ["adjust course"]
+        assert session.prompt_texts == ["adjust course\nwith extra detail"]
         assert session.streaming_behaviors == ["steer"]
-        assert app.state.queued_steering == ("adjust course",)
+        assert app.state.queued_steering == ("adjust course\nwith extra detail",)
         assert app.state.queued_follow_up == ()
         assert queued_messages.display is True
         rendered_queue = tui_app._render_queued_messages(
             app.state,
             theme=app.tui_settings.resolved_theme,
         )
-        assert "↪ steering · inserted at the next turn: adjust course" in [
-            str(row) for row in rendered_queue.renderables
-        ]
+        rendered_rows = [str(row) for row in rendered_queue.renderables]
+        assert "↪ steering · queued: adjust course" in rendered_rows
+        assert all("with extra detail" not in row for row in rendered_rows)
 
     assert notifications == []
 
@@ -2706,25 +2706,25 @@ async def test_tui_app_queues_follow_up_prompt_from_keybinding() -> None:
     async with app.run_test() as pilot:
         app.state.running = True
         prompt = app.query_one("#prompt", TextArea)
-        prompt.text = "after this"
+        prompt.text = "after this\nwith extra detail"
 
         await pilot.press("alt+enter")
         await pilot.pause()
 
         queued_messages = app.query_one("#queued-messages")
         assert prompt.text == ""
-        assert session.prompt_texts == ["after this"]
+        assert session.prompt_texts == ["after this\nwith extra detail"]
         assert session.streaming_behaviors == ["follow_up"]
         assert app.state.queued_steering == ()
-        assert app.state.queued_follow_up == ("after this",)
+        assert app.state.queued_follow_up == ("after this\nwith extra detail",)
         assert queued_messages.display is True
         rendered_queue = tui_app._render_queued_messages(
             app.state,
             theme=app.tui_settings.resolved_theme,
         )
-        assert "↳ follow-up · queued after this turn: after this" in [
-            str(row) for row in rendered_queue.renderables
-        ]
+        rendered_rows = [str(row) for row in rendered_queue.renderables]
+        assert "↳ follow-up · queued: after this" in rendered_rows
+        assert all("with extra detail" not in row for row in rendered_rows)
 
     assert notifications == []
 

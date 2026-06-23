@@ -3012,14 +3012,20 @@ def _render_queued_messages(state: TuiState, *, theme: TuiTheme) -> Group:
     """Render queued prompts stacked above the prompt input."""
     rows: list[Text] = []
     for message in state.queued_steering:
-        row = Text("↪ steering · inserted at the next turn: ", style=theme.muted_text)
-        row.append(message, style=theme.prompt_text)
+        row = Text("↪ steering · queued: ", style=theme.muted_text)
+        row.append(_queued_message_preview(message), style=theme.prompt_text)
         rows.append(row)
     for message in state.queued_follow_up:
-        row = Text("↳ follow-up · queued after this turn: ", style=theme.muted_text)
-        row.append(message, style=theme.prompt_text)
+        row = Text("↳ follow-up · queued: ", style=theme.muted_text)
+        row.append(_queued_message_preview(message), style=theme.prompt_text)
         rows.append(row)
     return Group(*rows)
+
+
+def _queued_message_preview(message: str) -> str:
+    """Return the single-line preview shown above the prompt."""
+    lines = message.splitlines()
+    return lines[0] if lines else ""
 
 
 def _prompt_footer_mode(
