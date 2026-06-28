@@ -253,7 +253,14 @@ class CodingSession:
             if linear_state.active_leaf_id is not None
             else linear_state
         )
-        tools = config.tools if config.tools is not None else create_coding_tools(cwd=config.cwd)
+        tools = (
+            config.tools
+            if config.tools is not None
+            else create_coding_tools(
+                cwd=config.cwd,
+                shell_command_prefix=config.shell_command_prefix,
+            )
+        )
         resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
         resources = _load_session_resources(resource_paths, config.context_files)
         system = (
@@ -912,6 +919,7 @@ class CodingSession:
                 auto_compact_token_threshold=self._auto_compact_token_threshold,
                 auto_compact_enabled=self._auto_compact_enabled,
                 thinking_level=self._thinking_level,
+                shell_command_prefix=self._config.shell_command_prefix,
             )
         )
         self._config = replacement._config

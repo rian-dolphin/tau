@@ -91,21 +91,26 @@ class ToolDefinition:
 _file_locks: dict[Path, asyncio.Lock] = {}
 
 
-def create_coding_tools(*, cwd: str | Path | None = None) -> list[AgentTool]:
+def create_coding_tools(
+    *,
+    cwd: str | Path | None = None,
+    shell_command_prefix: str | None = None,
+) -> list[AgentTool]:
     """Create the default coding-tool set for a local project.
 
     The returned tools are ordered as `read`, `write`, `edit`, and `bash`.
     Relative paths used with those tools are resolved against `cwd`; when `cwd`
     is omitted, the process current working directory at factory-call time is
     used. The tools share per-path write/edit locks within this process so
-    concurrent mutations of the same file do not interleave.
+    concurrent mutations of the same file do not interleave. When configured,
+    `shell_command_prefix` is prepended to every bash tool command.
     """
     root = Path.cwd() if cwd is None else Path(cwd)
     return [
         create_read_tool(cwd=root),
         create_write_tool(cwd=root),
         create_edit_tool(cwd=root),
-        create_bash_tool(cwd=root),
+        create_bash_tool(cwd=root, shell_command_prefix=shell_command_prefix),
     ]
 
 

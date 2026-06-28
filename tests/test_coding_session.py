@@ -1884,6 +1884,38 @@ async def test_session_toggles_and_cycles_scoped_models(
 
 
 @pytest.mark.anyio
+async def test_session_resume_preserves_shell_command_prefix(tmp_path: Path) -> None:
+    manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
+    first_cwd = tmp_path / "first"
+    second_cwd = tmp_path / "second"
+    first_cwd.mkdir()
+    second_cwd.mkdir()
+    first_record = manager.create_session(cwd=first_cwd, model="fake", title="First")
+    second_record = manager.create_session(cwd=second_cwd, model="fake", title="Second")
+    second_storage = JsonlSessionStorage(second_record.path)
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="fake",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(first_record.path),
+            cwd=first_record.cwd,
+            session_id=first_record.id,
+            session_manager=manager,
+            shell_command_prefix="shopt -s expand_aliases\nalias greet='printf resumed-alias'",
+        )
+    )
+    await second_storage.append(SessionInfoEntry(cwd=str(second_record.cwd)))
+    await second_storage.append(ModelChangeEntry(model="fake"))
+
+    await session.resume(second_record.id)
+    result = await session.run_terminal_command("greet", add_to_context=False)
+
+    assert result.ok is True
+    assert result.output == "resumed-alias"
+
+
+@pytest.mark.anyio
 async def test_session_resumes_indexed_session(tmp_path: Path) -> None:
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
     first_record = manager.create_session(cwd=tmp_path / "first", model="fake", title="First")
