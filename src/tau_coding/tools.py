@@ -232,8 +232,8 @@ def create_read_tool_definition(*, cwd: str | Path | None = None) -> ToolDefinit
             "Read the contents of a file. Supports text files and images (jpg, png, gif, webp). "
             "Images are returned as base64 metadata. For text files, output is truncated to "
             f"{DEFAULT_MAX_OUTPUT_LINES} lines or {DEFAULT_MAX_OUTPUT_BYTES // 1024}KB "
-            "(whichever is hit first). Use offset/limit for large files. When you need the "
-            "full file, continue with offset until complete."
+            "(whichever is hit first). For broad context, omit limit or use a generous one; "
+            "use offset/limit for targeted ranges or after truncation."
         ),
         prompt_snippet="Read file contents",
         prompt_guidelines=("Use read to examine files instead of cat or sed.",),
