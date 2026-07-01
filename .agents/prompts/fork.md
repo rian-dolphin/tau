@@ -47,6 +47,10 @@ git checkout personal && git rebase main                 # replay my stack onto 
   and get dropped automatically during rebase — expect the stack to shrink; that is
   correct, not data loss.
 - Optionally keep the fork's `main` clean too: `git push origin main --force-with-lease`.
+- **If the sync changed dependencies** (`pyproject.toml` `dependencies`), the editable
+  tool env is now stale — editable installs track code, not deps. Resync it:
+  `uv tool install --editable . --reinstall`. Skipping this surfaces later as a
+  `ModuleNotFoundError` at launch for the newly-added package.
 
 ## Flow B — Contribute a fix upstream
 
