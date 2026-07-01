@@ -108,12 +108,6 @@ class CompactSessionInfo(Static):
         self.update(render_compact_session_info(session, theme=theme))
 
 
-class NonSelectableStatic(Static):
-    """Static display text that should not participate in mouse selection."""
-
-    ALLOW_SELECT = False
-
-
 class TauMarkdownBlock(MarkdownBlock):
     """Markdown block that applies Tau's themed inline link color."""
 
@@ -197,18 +191,13 @@ class ThemedMarkdownWidget(TextualMarkdown):
 
 
 class TranscriptMessageWidget(Horizontal):
-    """One selectable transcript message with a non-selectable visual gutter."""
+    """One selectable transcript message with a full-height visual border."""
 
     DEFAULT_CSS = """
     TranscriptMessageWidget {
         width: 1fr;
         height: auto;
         margin: 1 1 2 0;
-    }
-
-    TranscriptMessageWidget > .transcript-message-gutter {
-        width: 1;
-        height: auto;
     }
 
     TranscriptMessageWidget > .transcript-message-body {
@@ -242,13 +231,13 @@ class TranscriptMessageWidget(Horizontal):
         self._theme = theme
         self._role_style = _chat_item_role_style(item, theme)
         super().__init__(classes="transcript-message")
+        _foreground, background = _split_rich_style_colors(self._role_style.body)
+        self.styles.border_left = ("outer", self._role_style.border)
+        if background:
+            self.styles.background = background
 
     def compose(self) -> Any:
-        gutter = NonSelectableStatic("▌", classes="transcript-message-gutter")
-        gutter.styles.color = self._role_style.border
-        body = self._body_widget()
-        yield gutter
-        yield body
+        yield self._body_widget()
 
     def _body_widget(self) -> Static | ThemedMarkdownWidget:
         if _use_plain_transcript_body(self.item):
@@ -270,11 +259,11 @@ class TranscriptMessageWidget(Horizontal):
                 theme=self._theme,
                 classes="transcript-message-body transcript-markdown-body",
             )
-            foreground, background = _split_rich_style_colors(self._role_style.body)
-            if foreground:
-                body.styles.color = foreground
-            if background:
-                body.styles.background = background
+        foreground, background = _split_rich_style_colors(self._role_style.body)
+        if foreground:
+            body.styles.color = foreground
+        if background:
+            body.styles.background = background
         return body
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
@@ -869,7 +858,10 @@ def _chat_item_role_style(item: ChatItem, theme: TuiTheme) -> TuiRoleStyle:
                 body=theme.role_styles["tool"].body,
             )
         if item.tool_result_text.startswith("✗"):
-            return TuiRoleStyle(border="#ff4f4f", body=theme.role_styles["tool"].body)
+            return TuiRoleStyle(
+                border=theme.role_styles["error"].border,
+                body=theme.role_styles["tool"].body,
+            )
     return theme.role_styles[item.role]
 
 
@@ -884,6 +876,8 @@ def _tool_accent_style(item: ChatItem, *, theme: TuiTheme) -> str | None:
 
 
 def _tool_success_color(theme: TuiTheme) -> str:
+    if theme.name == "ghostty":
+        return "#b5bd68"
     if theme.name == "tau-light":
         return "#166534"
     return "#9cffb1"
@@ -893,12 +887,16 @@ def _tool_success_style(theme: TuiTheme) -> str:
     color = _tool_success_color(theme)
     if theme.name == "tau-light":
         return color
+    if theme.name == "ghostty":
+        return f"{color} on {theme.transcript_background}"
     return f"{color} on #000000"
 
 
 def _tool_error_style(theme: TuiTheme) -> str:
     if theme.name == "tau-light":
         return theme.role_styles["error"].border
+    if theme.name == "ghostty":
+        return f"{theme.role_styles['error'].border} on {theme.transcript_background}"
     return "#ff4f4f on #000000"
 
 

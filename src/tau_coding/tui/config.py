@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from json import dumps, loads
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 
 from tau_coding.paths import TauPaths
 
@@ -49,7 +49,7 @@ class TuiKeybindings:
         }
 
 
-type TuiThemeName = Literal["tau-dark", "tau-light", "high-contrast"]
+type TuiThemeName = Literal["tau-dark", "tau-light", "high-contrast", "ghostty"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +178,48 @@ HIGH_CONTRAST_THEME = TuiTheme(
 )
 
 
+GHOSTTY_THEME = TuiTheme(
+    name="ghostty",
+    screen_background="#282c34",
+    screen_text="#ffffff",
+    chrome_background="#282c34",
+    chrome_text="#ffffff",
+    muted_text="#666666",
+    sidebar_background="#282c34",
+    border="#1d1f21",
+    transcript_background="#282c34",
+    prompt_background="#282c34",
+    prompt_text="#ECECED",
+    prompt_border="#81a2be",
+    autocomplete_background="#1d1f21",
+    accent="#f0c674",
+    highlight_background="#8abeb7",
+    highlight_text="#1d1f21",
+    markdown_heading="#f0c674",
+    markdown_table_header="#c5c8c6",
+    markdown_table_border="#666666",
+    markdown_inline_code="#8EBDEC",
+    markdown_code_block_background="#282c34",
+    markdown_link="#81a2be",
+    markdown_bullet="#f0c674",
+    completion_selected="bold #1d1f21 on #8abeb7",
+    completion_selected_description="#1d1f21 on #8abeb7",
+    completion_description="#c5c8c6",
+    syntax_theme="ansi_dark",
+    role_styles={
+        "user": TuiRoleStyle(border="#F0C674", body="#ECECED on #4A412E"),
+        "assistant": TuiRoleStyle(border="#b5bd68", body="#ECECED on #282c34"),
+        "tool": TuiRoleStyle(border="#f0c674", body="#c5c8c6 on #282c34"),
+        "error": TuiRoleStyle(border="#d54e53", body="#d54e53 on #282c34"),
+        "status": TuiRoleStyle(border="#666666", body="#c5c8c6 on #282c34"),
+        "thinking": TuiRoleStyle(border="#666666", body="#c5c8c6 on #282c34"),
+        "skill": TuiRoleStyle(border="#b294bb", body="#eaeaea on #282c34"),
+        "branch_summary": TuiRoleStyle(border="#c397d8", body="#eaeaea on #282c34"),
+        "compaction_summary": TuiRoleStyle(border="#c397d8", body="#eaeaea on #282c34"),
+    },
+)
+
+
 TAU_LIGHT_THEME = TuiTheme(
     name="tau-light",
     screen_background="#ffffff",
@@ -224,6 +266,7 @@ _THEMES: dict[TuiThemeName, TuiTheme] = {
     TAU_DARK_THEME.name: TAU_DARK_THEME,
     TAU_LIGHT_THEME.name: TAU_LIGHT_THEME,
     HIGH_CONTRAST_THEME.name: HIGH_CONTRAST_THEME,
+    GHOSTTY_THEME.name: GHOSTTY_THEME,
 }
 BUILTIN_TUI_THEME_NAMES: tuple[TuiThemeName, ...] = tuple(_THEMES)
 
@@ -331,8 +374,10 @@ def _theme_name(value: object) -> TuiThemeName:
     if not isinstance(value, str) or not value.strip():
         raise TuiConfigError("TUI theme must be a non-empty string")
     name = value.strip()
-    if name == "tau-dark" or name == "tau-light" or name == "high-contrast":
-        return cast(TuiThemeName, name)
+    if name == "terminal":
+        name = "ghostty"
+    if name in _THEMES:
+        return name
     raise TuiConfigError(f"Unknown TUI theme: {name}")
 
 

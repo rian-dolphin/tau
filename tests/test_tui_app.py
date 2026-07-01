@@ -52,6 +52,7 @@ from tau_coding.system_prompt import ProjectContextFile
 from tau_coding.tools import create_coding_tools
 from tau_coding.tui import app as tui_app
 from tau_coding.tui.app import (
+    GHOSTTY_ANSI_THEME,
     CommandOutputScreen,
     LoginMethodPickerScreen,
     LoginProviderPickerScreen,
@@ -72,6 +73,7 @@ from tau_coding.tui.app import (
 )
 from tau_coding.tui.autocomplete import CompletionItem, CompletionState
 from tau_coding.tui.config import (
+    GHOSTTY_THEME,
     HIGH_CONTRAST_THEME,
     TAU_DARK_THEME,
     TAU_LIGHT_THEME,
@@ -1772,6 +1774,92 @@ def test_tui_app_uses_light_theme_css_variables() -> None:
     assert variables["footer-key-foreground"] == "#0f766e"
 
 
+def test_tui_app_uses_ghostty_theme_colors_and_ansi_palette() -> None:
+    app = TauTuiApp(FakeSession(), tui_settings=TuiSettings(theme="ghostty"))
+
+    variables = app.get_theme_variable_defaults()
+
+    assert variables["tau-screen-background"] == "#282c34"
+    assert variables["tau-screen-text"] == "#ffffff"
+    assert variables["tau-muted-text"] == "#666666"
+    assert variables["tau-accent"] == "#f0c674"
+    assert variables["tau-prompt-background"] == "#282c34"
+    assert variables["tau-prompt-text"] == "#ECECED"
+    assert variables["tau-markdown-inline-code"] == "#8EBDEC"
+    assert variables["tau-markdown-code-block-background"] == "#282c34"
+    assert app.ansi_theme_dark is GHOSTTY_ANSI_THEME
+
+
+def test_ghostty_agent_markdown_uses_custom_text_and_code_colors() -> None:
+    console = Console(record=True, width=80, color_system="truecolor")
+    console.print(
+        render_chat_item(
+            ChatItem(
+                role="assistant",
+                text="Use `tau` here.\n\n```python\nprint('hello')\n```",
+            ),
+            theme=GHOSTTY_THEME,
+        )
+    )
+
+    output = console.export_text(styles=True)
+
+    assert _style_color_escape("#ECECED") in output
+    assert _style_color_escape("#8EBDEC") in output
+    assert "48;2;40;44;52" in output
+
+
+def test_ghostty_user_message_has_distinct_background() -> None:
+    console = Console(record=True, width=80, color_system="truecolor")
+    console.print(
+        render_chat_item(
+            ChatItem(role="user", text="Please inspect this."),
+            theme=GHOSTTY_THEME,
+        )
+    )
+
+    output = console.export_text(styles=True)
+
+    assert _style_color_escape("#ECECED") in output
+    assert "48;2;74;65;46" in output
+
+
+@pytest.mark.anyio
+async def test_ghostty_user_message_uses_full_block_background_and_border() -> None:
+    app = TauTuiApp(
+        FakeSession(messages=[UserMessage(content="First line\nSecond line")]),
+        tui_settings=TuiSettings(theme="ghostty"),
+    )
+
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        message = app.query_one(TranscriptMessageWidget)
+        body = message.query_one(".transcript-message-body")
+
+        assert message.size.height > 1
+        assert message.styles.background.hex == "#4A412E"
+        assert message.styles.border_left[0] == "outer"
+        assert message.styles.border_left[1].hex == "#F0C674"
+        assert body.styles.background.hex == "#4A412E"
+
+
+@pytest.mark.anyio
+async def test_tui_app_starts_with_ghostty_theme() -> None:
+    app = TauTuiApp(FakeSession(), tui_settings=TuiSettings(theme="ghostty"))
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.adapter.apply(AgentStartEvent())
+        app._refresh()
+        await pilot.pause()
+
+        prompt = app.query_one("#prompt", PromptInput)
+        assert prompt.styles.background.hex == "#282C34"
+        assert prompt.styles.color.hex == "#ECECED"
+        assert prompt.highlight_cursor_line is False
+        assert app.ansi_theme_dark is GHOSTTY_ANSI_THEME
+
+
 def test_tau_dark_theme_uses_black_chat_backgrounds() -> None:
     theme = TuiSettings().resolved_theme
 
@@ -1907,6 +1995,7 @@ async def test_tui_app_theme_command_opens_picker_and_persists_selection(
             "✓ tau-dark",
             "  tau-light",
             "  high-contrast",
+            "  ghostty",
         ]
 
         theme_list = picker.query_one("#theme-picker-list", ListView)

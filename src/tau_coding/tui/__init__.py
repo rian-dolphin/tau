@@ -5,6 +5,7 @@ from tau_coding.tui.app import TauTuiApp, run_tui_app
 from tau_coding.tui.autocomplete import CompletionOption
 from tau_coding.tui.config import (
     BUILTIN_TUI_THEME_NAMES,
+    GHOSTTY_THEME,
     HIGH_CONTRAST_THEME,
     TAU_DARK_THEME,
     TAU_LIGHT_THEME,
@@ -37,6 +38,7 @@ __all__ = [
     "ChatItem",
     "CompletionOption",
     "CompactSessionInfo",
+    "GHOSTTY_THEME",
     "TauTuiApp",
     "SessionSidebar",
     "TAU_DARK_THEME",

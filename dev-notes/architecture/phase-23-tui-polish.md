@@ -145,6 +145,11 @@ The built-in theme set now includes `tau-light` alongside `tau-dark` and
 Textual CSS variables plus Rich renderers without leaking UI policy into the
 portable harness.
 
+The later `ghostty` theme copies Ghostty's default dark foreground, background,
+and 16-color palette into fixed frontend colors. Its syntax renderer uses the same
+palette. This avoids differences between Rich and Textual's handling of inherited
+terminal colors while keeping the policy inside `tau_coding.tui`.
+
 Sessions can now be renamed from the TUI with `/name <new name>`. The command
 updates the indexed session metadata used by `/resume`, resume completions, and
 the session picker; the underlying append-only transcript remains the durable

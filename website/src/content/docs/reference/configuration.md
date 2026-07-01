@@ -129,8 +129,9 @@ The built-in frontend reads optional settings from `~/.tau/tui.json`:
 }
 ```
 
-Built-in themes: `tau-dark` (default), `tau-light`, `high-contrast`. Set one with
-`/theme`. Keys use Textual syntax; omitted keys keep their defaults. Tau rejects
+Built-in themes: `tau-dark` (default), `tau-light`, `high-contrast`, `ghostty`.
+The `ghostty` theme copies Ghostty's default dark palette.
+Set one with `/theme`. Keys use Textual syntax; omitted keys keep their defaults. Tau rejects
 unknown themes/keybinding names, empty keys, and duplicate assignments. Full list
 in [Keyboard shortcuts](./keybindings.md).
 

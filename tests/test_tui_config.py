@@ -4,6 +4,7 @@ import pytest
 
 from tau_coding.paths import TauPaths
 from tau_coding.tui.config import (
+    GHOSTTY_THEME,
     HIGH_CONTRAST_THEME,
     TuiConfigError,
     TuiKeybindings,
@@ -120,6 +121,24 @@ def test_tui_settings_accept_light_theme() -> None:
     assert settings.resolved_theme.syntax_theme == "ansi_light"
 
 
+def test_tui_settings_accept_ghostty_theme() -> None:
+    settings = tui_settings_from_json({"theme": "ghostty"})
+
+    assert settings.theme == "ghostty"
+    assert settings.resolved_theme == GHOSTTY_THEME
+    assert settings.resolved_theme.screen_background == "#282c34"
+    assert settings.resolved_theme.accent == "#f0c674"
+    assert settings.resolved_theme.markdown_inline_code == "#8EBDEC"
+    assert settings.resolved_theme.role_styles["assistant"].body == "#ECECED on #282c34"
+    assert settings.resolved_theme.role_styles["user"].border == "#F0C674"
+    assert settings.resolved_theme.role_styles["user"].body == "#ECECED on #4A412E"
+    assert settings.resolved_theme.prompt_background == "#282c34"
+
+
+def test_tui_settings_migrate_terminal_theme_to_ghostty() -> None:
+    assert tui_settings_from_json({"theme": "terminal"}).theme == "ghostty"
+
+
 def test_tui_settings_load_auto_copy_selection() -> None:
     settings = tui_settings_from_json({"auto_copy_selection": True})
 
@@ -164,3 +183,4 @@ def test_get_tui_theme_returns_builtin_theme() -> None:
     assert get_tui_theme("high-contrast").prompt_border == "#00ff66"
     assert get_tui_theme("tau-light").prompt_border == "#2563eb"
     assert get_tui_theme("tau-dark").screen_background == "#000000"
+    assert get_tui_theme("ghostty").screen_background == "#282c34"

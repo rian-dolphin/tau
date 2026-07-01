@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, cast
 
 from rich.console import Console, Group
+from rich.terminal_theme import TerminalTheme
 from rich.text import Text
 from textual import events, on
 from textual.app import App, ComposeResult
@@ -117,6 +118,30 @@ COMPLETION_MAX_VISIBLE_LINES = 16
 NO_STORED_CREDENTIALS_MESSAGE = (
     "No stored credentials to remove. /logout only removes credentials saved by /login; "
     "environment variables and providers.json config are unchanged."
+)
+GHOSTTY_ANSI_THEME = TerminalTheme(
+    background=(40, 44, 52),
+    foreground=(255, 255, 255),
+    normal=[
+        (29, 31, 33),
+        (204, 102, 102),
+        (181, 189, 104),
+        (240, 198, 116),
+        (129, 162, 190),
+        (178, 148, 187),
+        (138, 190, 183),
+        (197, 200, 198),
+    ],
+    bright=[
+        (102, 102, 102),
+        (213, 78, 83),
+        (185, 202, 74),
+        (231, 197, 71),
+        (122, 166, 218),
+        (195, 151, 216),
+        (112, 192, 177),
+        (234, 234, 234),
+    ],
 )
 
 
@@ -1776,6 +1801,8 @@ class TauTuiApp(App[None]):
         self.startup_notice = startup_notice
         self.initial_prompt = initial_prompt
         super().__init__()
+        self._default_ansi_theme_dark = self.ansi_theme_dark
+        self._sync_ansi_theme()
         self._bindings = BindingsMap(_app_bindings(self.tui_settings.keybindings))
         self.session = session
         self.state = TuiState(skills=session.skills)
@@ -2145,9 +2172,18 @@ class TauTuiApp(App[None]):
             theme=theme,
             auto_copy_selection=self.tui_settings.auto_copy_selection,
         )
+        self._sync_ansi_theme()
         save_tui_settings(self.tui_settings)
         self.refresh_css(animate=False)
         self._refresh()
+
+    def _sync_ansi_theme(self) -> None:
+        """Use Ghostty's fixed ANSI palette for syntax rendered by that theme."""
+        self.ansi_theme_dark = (
+            GHOSTTY_ANSI_THEME
+            if self.tui_settings.theme == "ghostty"
+            else self._default_ansi_theme_dark
+        )
 
     async def _queue_prompt(
         self,
@@ -2995,9 +3031,7 @@ def _activity_prompt_border_color(
 ) -> str:
     """Return the prompt border color for the current activity animation frame."""
     del frame, running
-    if shell_mode:
-        return theme.accent
-    return theme.prompt_border
+    return theme.accent if shell_mode else theme.prompt_border
 
 
 def _render_activity_indicator(theme: TuiTheme, *, frame: int, running: bool) -> Text:
