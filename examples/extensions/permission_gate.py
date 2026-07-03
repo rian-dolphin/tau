@@ -13,7 +13,8 @@ import re
 from tau_coding.extensions import ExtensionAPI, ToolCallHookEvent, ToolCallHookResult
 
 DANGEROUS_PATTERNS = (
-    re.compile(r"\brm\s+-[a-z]*r[a-z]*f"),
+    # rm with a flag cluster containing both r and f, in either order
+    re.compile(r"\brm\s+-(?=[a-zA-Z]*r)(?=[a-zA-Z]*f)[a-zA-Z]+"),
     re.compile(r"\bgit\s+push\s+--force"),
     re.compile(r"\bgit\s+reset\s+--hard"),
     re.compile(r"\bchmod\s+-R\s+777\b"),
