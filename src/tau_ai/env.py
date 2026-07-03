@@ -23,6 +23,11 @@ class OpenAICompatibleConfig:
     max_retry_delay_seconds: float = DEFAULT_OPENAI_COMPATIBLE_MAX_RETRY_DELAY_SECONDS
     reasoning_effort: str | None = None
     reasoning_effort_parameter: str = "reasoning_effort"
+    # Whether the endpoint supports `stream_options: {"include_usage": true}`
+    # for token usage in streaming responses. Mirrors Pi's
+    # supportsUsageInStreaming compat flag (default true). Set False for
+    # strict endpoints that reject the parameter.
+    supports_usage_in_streaming: bool = True
 
 
 @dataclass(frozen=True, slots=True)
