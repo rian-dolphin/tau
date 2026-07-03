@@ -47,7 +47,13 @@ from tau_agent.session import (
     SessionState,
     ThinkingLevelChangeEntry,
 )
-from tau_agent.tools import AgentTool, AgentToolResult, ToolCall, ToolExecutor
+from tau_agent.tools import (
+    AgentTool,
+    AgentToolResult,
+    ToolCall,
+    ToolExecutor,
+    ToolUpdateCallback,
+)
 from tau_agent.types import JSONObject, JSONPrimitive, JSONValue
 
 __all__ = [
@@ -91,6 +97,7 @@ __all__ = [
     "ToolExecutionUpdateEvent",
     "ToolExecutor",
     "ToolResultMessage",
+    "ToolUpdateCallback",
     "TurnEndEvent",
     "TurnStartEvent",
     "Usage",
