@@ -1,0 +1,576 @@
+"""Extension runtime: hook dispatch, tool wrapping, and session binding."""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
+from inspect import isawaitable
+from pathlib import Path
+from typing import Protocol
+
+from tau_agent.events import AgentEvent
+from tau_agent.tools import AgentTool, AgentToolResult, ToolCancellationToken
+from tau_agent.types import JSONValue
+from tau_coding.commands import (
+    CommandContext,
+    CommandRegistry,
+    CommandResult,
+    SlashCommand,
+    create_default_command_registry,
+)
+from tau_coding.extensions.api import (
+    AGENT_EVENT_TYPES,
+    AGENT_EVENT_WILDCARD,
+    LIFECYCLE_EVENT_TYPES,
+    ExtensionAPI,
+    ExtensionCommandContext,
+    ExtensionCommandHandler,
+    ExtensionError,
+    ExtensionHandler,
+    InputEvent,
+    InputHookResult,
+    NullUiBridge,
+    RegisteredExtension,
+    SessionLifecycleReason,
+    SessionShutdownEvent,
+    SessionStartEvent,
+    ToolCallHookEvent,
+    ToolCallHookResult,
+    ToolResultHookEvent,
+    ToolResultHookResult,
+    UiBridge,
+)
+from tau_coding.extensions.loader import (
+    LoadedExtension,
+    load_extensions,
+    unload_extension_modules,
+)
+from tau_coding.resources import ResourceDiagnostic, TauResourcePaths
+
+
+class BoundSession(Protocol):
+    """The slice of `CodingSession` the extension runtime binds to."""
+
+    @property
+    def cwd(self) -> Path: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def provider_name(self) -> str: ...
+
+    @property
+    def session_id(self) -> str | None: ...
+
+    @property
+    def system_prompt(self) -> str: ...
+
+    @property
+    def is_running(self) -> bool: ...
+
+    def queue_steering_message(self, content: str) -> None: ...
+
+    def queue_follow_up_message(self, content: str) -> None: ...
+
+    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ExtensionCommand:
+    """A slash command registered by an extension."""
+
+    extension: str
+    name: str
+    description: str
+    usage: str
+    aliases: tuple[str, ...]
+    handler: ExtensionCommandHandler
+
+
+@dataclass(frozen=True, slots=True)
+class RegisteredExtensionTool:
+    """A tool registered by an extension."""
+
+    extension: str
+    tool: AgentTool
+
+
+@dataclass(frozen=True, slots=True)
+class InputHookOutcome:
+    """Combined outcome of running all `input` hooks over prompt text."""
+
+    handled: bool
+    text: str
+    message: str | None = None
+
+
+class ExtensionRuntime:
+    """Owns loaded extensions and dispatches events between them and a session.
+
+    The runtime outlives any single `CodingSession`: session replacement flows
+    (resume, new, branch) re-bind the same runtime rather than re-running
+    extension discovery and `setup`.
+    """
+
+    def __init__(self, *, ui: UiBridge | None = None) -> None:
+        self._extensions: list[RegisteredExtension] = []
+        self._tools: dict[str, RegisteredExtensionTool] = {}
+        self._commands: dict[str, ExtensionCommand] = {}
+        self._load_diagnostics: list[ResourceDiagnostic] = []
+        self._runtime_diagnostics: list[ResourceDiagnostic] = []
+        self._session: BoundSession | None = None
+        self._ui: UiBridge = ui or NullUiBridge()
+        self._turn_requested: Callable[[], None] | None = None
+        self._harness_unsubscribe: Callable[[], None] | None = None
+
+    # -- loading -----------------------------------------------------------
+
+    def load(
+        self,
+        paths: TauResourcePaths,
+        *,
+        extra_paths: Sequence[Path] = (),
+        include_resource_dirs: bool = True,
+        include_project_dir: bool = False,
+    ) -> None:
+        """Discover extensions and run each `setup` with an isolated API."""
+        result = load_extensions(
+            paths,
+            extra_paths=extra_paths,
+            include_resource_dirs=include_resource_dirs,
+            include_project_dir=include_project_dir,
+        )
+        self._load_diagnostics.extend(result.diagnostics)
+        for extension in result.extensions:
+            self._setup_extension(extension)
+
+    def reset_for_reload(self) -> None:
+        """Drop all registrations and imported modules ahead of a re-load."""
+        if self._harness_unsubscribe is not None:
+            self._harness_unsubscribe()
+            self._harness_unsubscribe = None
+        self._extensions.clear()
+        self._tools.clear()
+        self._commands.clear()
+        self._load_diagnostics.clear()
+        self._runtime_diagnostics.clear()
+        unload_extension_modules()
+
+    def _setup_extension(self, extension: LoadedExtension) -> None:
+        api = ExtensionAPI(self, extension.name)
+        registered = RegisteredExtension(name=extension.name, path=extension.path, api=api)
+        self._extensions.append(registered)
+        try:
+            extension.setup(api)
+        except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+            self._extensions.remove(registered)
+            self._remove_registrations(extension.name)
+            self._load_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    name=extension.name,
+                    path=extension.path,
+                    message=f"setup failed: {exc!r}",
+                    severity="error",
+                )
+            )
+
+    def _remove_registrations(self, extension_name: str) -> None:
+        self._tools = {
+            name: registration
+            for name, registration in self._tools.items()
+            if registration.extension != extension_name
+        }
+        self._commands = {
+            name: command
+            for name, command in self._commands.items()
+            if command.extension != extension_name
+        }
+
+    # -- registration (called through ExtensionAPI) -------------------------
+
+    def register_tool(self, extension_name: str, tool: AgentTool) -> None:
+        """Register an extension tool; first registration per name wins."""
+        existing = self._tools.get(tool.name)
+        if existing is not None:
+            self._load_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    name=extension_name,
+                    message=(
+                        f"tool `{tool.name}` already registered by extension"
+                        f" `{existing.extension}`; ignoring duplicate"
+                    ),
+                )
+            )
+            return
+        self._tools[tool.name] = RegisteredExtensionTool(extension=extension_name, tool=tool)
+
+    def register_command(
+        self,
+        extension_name: str,
+        name: str,
+        handler: ExtensionCommandHandler,
+        *,
+        description: str = "",
+        usage: str | None = None,
+        aliases: tuple[str, ...] = (),
+    ) -> None:
+        """Register an extension slash command; first registration wins."""
+        normalized = name.strip().removeprefix("/").lower()
+        existing = self._commands.get(normalized)
+        if existing is not None:
+            self._load_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    name=extension_name,
+                    message=(
+                        f"command `/{normalized}` already registered by extension"
+                        f" `{existing.extension}`; ignoring duplicate"
+                    ),
+                )
+            )
+            return
+        self._commands[normalized] = ExtensionCommand(
+            extension=extension_name,
+            name=normalized,
+            description=description,
+            usage=usage or f"/{normalized}",
+            aliases=aliases,
+            handler=handler,
+        )
+
+    def subscribe(self, extension_name: str, event: str, handler: ExtensionHandler) -> None:
+        """Subscribe an extension handler to a named event."""
+        known = (
+            event in AGENT_EVENT_TYPES
+            or event in LIFECYCLE_EVENT_TYPES
+            or event == AGENT_EVENT_WILDCARD
+        )
+        if not known:
+            self._load_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    name=extension_name,
+                    message=f"unknown event `{event}`; handler ignored",
+                )
+            )
+            return
+        extension = self._extension_by_name(extension_name)
+        if extension is None:
+            raise ExtensionError(f"unknown extension: {extension_name}")
+        extension.handlers.setdefault(event, []).append(handler)
+
+    # -- binding -------------------------------------------------------------
+
+    def bind(self, session: BoundSession) -> None:
+        """Bind (or re-bind) the runtime to a coding session."""
+        self._session = session
+
+    def attach_harness_listener(
+        self,
+        subscribe: Callable[[Callable[[AgentEvent], Awaitable[None] | None]], Callable[[], None]],
+    ) -> None:
+        """Subscribe the event fan-out to a harness, replacing any prior one."""
+        if self._harness_unsubscribe is not None:
+            self._harness_unsubscribe()
+        self._harness_unsubscribe = subscribe(self._on_agent_event)
+
+    def set_ui_bridge(self, ui: UiBridge) -> None:
+        """Install the frontend UI bridge (TUI, print-mode fallback, or test)."""
+        self._ui = ui
+
+    def set_turn_requested_callback(self, callback: Callable[[], None] | None) -> None:
+        """Install the host callback used to start a run for idle deliveries."""
+        self._turn_requested = callback
+
+    @property
+    def ui(self) -> UiBridge:
+        """Return the active UI bridge."""
+        return self._ui
+
+    @property
+    def session_view(self) -> BoundSession:
+        """Return the bound session, raising if the runtime is unbound."""
+        if self._session is None:
+            raise ExtensionError(
+                "extension API used before the session was bound; "
+                "register handlers in setup() and act on events instead"
+            )
+        return self._session
+
+    @property
+    def extension_names(self) -> tuple[str, ...]:
+        """Return loaded extension names in load order."""
+        return tuple(extension.name for extension in self._extensions)
+
+    @property
+    def diagnostics(self) -> tuple[ResourceDiagnostic, ...]:
+        """Return load-time and runtime diagnostics."""
+        return tuple(self._load_diagnostics) + tuple(self._runtime_diagnostics)
+
+    @property
+    def extension_tools(self) -> tuple[AgentTool, ...]:
+        """Return extension-registered tools in registration order."""
+        return tuple(registration.tool for registration in self._tools.values())
+
+    # -- actions (called through ExtensionAPI) --------------------------------
+
+    def send_user_message(self, content: str, *, deliver_as: str = "follow_up") -> None:
+        """Queue a user message and request a turn when the session is idle."""
+        session = self.session_view
+        if deliver_as == "steer" and session.is_running:
+            session.queue_steering_message(content)
+            return
+        session.queue_follow_up_message(content)
+        if not session.is_running and self._turn_requested is not None:
+            self._turn_requested()
+
+    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
+        """Persist a `CustomEntry` through the bound session."""
+        await self.session_view.append_custom_entry(namespace, data)
+
+    # -- tools ----------------------------------------------------------------
+
+    def compose_tools(self, builtin_tools: Sequence[AgentTool]) -> list[AgentTool]:
+        """Merge built-in and extension tools, then wrap all with hook seams.
+
+        Extension tools override built-ins with the same name in place;
+        extension-only tools append in registration order.
+        """
+        merged: list[AgentTool] = []
+        extension_tools = dict(self._tools)
+        for tool in builtin_tools:
+            override = extension_tools.pop(tool.name, None)
+            merged.append(override.tool if override is not None else tool)
+        merged.extend(registration.tool for registration in extension_tools.values())
+        return [self._wrap_tool(tool) for tool in merged]
+
+    def _wrap_tool(self, tool: AgentTool) -> AgentTool:
+        async def executor(
+            arguments: Mapping[str, JSONValue],
+            signal: ToolCancellationToken | None = None,
+        ) -> AgentToolResult:
+            call_outcome = await self._run_tool_call_hooks(tool.name, arguments)
+            if call_outcome.block:
+                reason = call_outcome.reason or "blocked by an extension"
+                message = f"Tool call blocked: {reason}"
+                return AgentToolResult(
+                    tool_call_id="",
+                    name=tool.name,
+                    ok=False,
+                    content=message,
+                    error=message,
+                )
+            effective_arguments = call_outcome.arguments or arguments
+            result = await tool.execute(effective_arguments, signal=signal)
+            return await self._run_tool_result_hooks(tool.name, effective_arguments, result)
+
+        return AgentTool(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            executor=executor,
+            prompt_snippet=tool.prompt_snippet,
+            prompt_guidelines=tool.prompt_guidelines,
+        )
+
+    async def _run_tool_call_hooks(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, JSONValue],
+    ) -> ToolCallHookResult:
+        effective: Mapping[str, JSONValue] = arguments
+        for extension, handler in self._handlers_for("tool_call"):
+            event = ToolCallHookEvent(tool_name=tool_name, arguments=effective)
+            try:
+                result = await _resolve(handler(event))
+            except Exception as exc:  # noqa: BLE001 - fail-safe: an error blocks the tool
+                self._record_runtime_failure(extension, "tool_call", exc)
+                return ToolCallHookResult(
+                    block=True,
+                    reason=f"extension `{extension}` tool_call hook failed: {exc}",
+                )
+            if result is None:
+                continue
+            if not isinstance(result, ToolCallHookResult):
+                self._record_bad_result(extension, "tool_call", result)
+                continue
+            if result.block:
+                return ToolCallHookResult(block=True, reason=result.reason)
+            if result.arguments is not None:
+                effective = result.arguments
+        if effective is arguments:
+            return ToolCallHookResult()
+        return ToolCallHookResult(arguments=effective)
+
+    async def _run_tool_result_hooks(
+        self,
+        tool_name: str,
+        arguments: Mapping[str, JSONValue],
+        result: AgentToolResult,
+    ) -> AgentToolResult:
+        current = result
+        for extension, handler in self._handlers_for("tool_result"):
+            event = ToolResultHookEvent(tool_name=tool_name, arguments=arguments, result=current)
+            try:
+                outcome = await _resolve(handler(event))
+            except Exception as exc:  # noqa: BLE001 - result hooks are observational-ish
+                self._record_runtime_failure(extension, "tool_result", exc)
+                continue
+            if outcome is None:
+                continue
+            if not isinstance(outcome, ToolResultHookResult):
+                self._record_bad_result(extension, "tool_result", outcome)
+                continue
+            updates: dict[str, object] = {}
+            if outcome.content is not None:
+                updates["content"] = outcome.content
+            if outcome.ok is not None:
+                updates["ok"] = outcome.ok
+            if outcome.details is not None:
+                updates["details"] = outcome.details
+            if updates:
+                current = current.model_copy(update=updates)
+        return current
+
+    # -- commands ---------------------------------------------------------------
+
+    def build_command_registry(self) -> CommandRegistry:
+        """Build a session command registry: defaults plus extension commands."""
+        registry = create_default_command_registry()
+        for command in self._commands.values():
+            slash_command = SlashCommand(
+                name=command.name,
+                description=command.description or f"Extension command ({command.extension}).",
+                usage=command.usage,
+                handler=self._command_handler(command),
+                aliases=command.aliases,
+                search_terms=(command.extension, "extension"),
+            )
+            try:
+                registry.register(slash_command)
+            except ValueError as exc:
+                self._load_diagnostics.append(
+                    ResourceDiagnostic(
+                        kind="extension",
+                        name=command.extension,
+                        message=f"could not register command `/{command.name}`: {exc}",
+                    )
+                )
+        return registry
+
+    def _command_handler(
+        self, command: ExtensionCommand
+    ) -> Callable[[CommandContext], CommandResult]:
+        def handler(context: CommandContext) -> CommandResult:
+            extension_context = ExtensionCommandContext(
+                name=command.name,
+                args=context.args,
+                api=self._api_for(command.extension),
+            )
+            try:
+                message = command.handler(context.args, extension_context)
+            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+                self._record_runtime_failure(command.extension, f"command:/{command.name}", exc)
+                return CommandResult(
+                    handled=True,
+                    message=f"Extension command /{command.name} failed: {exc}",
+                )
+            return CommandResult(handled=True, message=message)
+
+        return handler
+
+    # -- event dispatch -----------------------------------------------------------
+
+    async def emit_session_start(self, reason: SessionLifecycleReason) -> None:
+        """Dispatch `session_start` to subscribed extensions."""
+        await self._emit_lifecycle("session_start", SessionStartEvent(reason=reason))
+
+    async def emit_session_shutdown(self, reason: SessionLifecycleReason) -> None:
+        """Dispatch `session_shutdown` to subscribed extensions."""
+        await self._emit_lifecycle("session_shutdown", SessionShutdownEvent(reason=reason))
+
+    async def run_input_hooks(self, text: str) -> InputHookOutcome:
+        """Run `input` hooks over prompt text; transforms chain, handled wins."""
+        current = text
+        for extension, handler in self._handlers_for("input"):
+            try:
+                result = await _resolve(handler(InputEvent(text=current)))
+            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+                self._record_runtime_failure(extension, "input", exc)
+                continue
+            if result is None:
+                continue
+            if not isinstance(result, InputHookResult):
+                self._record_bad_result(extension, "input", result)
+                continue
+            if result.action == "handled":
+                return InputHookOutcome(handled=True, text=current, message=result.message)
+            if result.action == "transform" and result.text is not None:
+                current = result.text
+        return InputHookOutcome(handled=False, text=current)
+
+    async def _on_agent_event(self, event: AgentEvent) -> None:
+        handlers = list(self._handlers_for(event.type))
+        handlers.extend(self._handlers_for(AGENT_EVENT_WILDCARD))
+        for extension, handler in handlers:
+            try:
+                await _resolve(handler(event))
+            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+                self._record_runtime_failure(extension, event.type, exc)
+
+    async def _emit_lifecycle(self, event_name: str, payload: object) -> None:
+        for extension, handler in self._handlers_for(event_name):
+            try:
+                await _resolve(handler(payload))
+            except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
+                self._record_runtime_failure(extension, event_name, exc)
+
+    # -- internals -------------------------------------------------------------
+
+    def _handlers_for(self, event: str) -> Iterator[tuple[str, ExtensionHandler]]:
+        for extension in self._extensions:
+            for handler in extension.handlers.get(event, ()):
+                yield extension.name, handler
+
+    def _extension_by_name(self, name: str) -> RegisteredExtension | None:
+        for extension in self._extensions:
+            if extension.name == name:
+                return extension
+        return None
+
+    def _api_for(self, extension_name: str) -> ExtensionAPI:
+        extension = self._extension_by_name(extension_name)
+        if extension is None:
+            raise ExtensionError(f"unknown extension: {extension_name}")
+        return extension.api
+
+    def _record_runtime_failure(self, extension: str, event: str, exc: Exception) -> None:
+        self._runtime_diagnostics.append(
+            ResourceDiagnostic(
+                kind="extension",
+                name=extension,
+                message=f"handler for `{event}` raised: {exc!r}",
+                severity="error",
+            )
+        )
+
+    def _record_bad_result(self, extension: str, event: str, result: object) -> None:
+        self._runtime_diagnostics.append(
+            ResourceDiagnostic(
+                kind="extension",
+                name=extension,
+                message=(
+                    f"handler for `{event}` returned unsupported"
+                    f" result type {type(result).__name__}; ignored"
+                ),
+            )
+        )
+
+
+async def _resolve(value: object) -> object:
+    if isawaitable(value):
+        return await value
+    return value

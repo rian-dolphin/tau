@@ -748,6 +748,7 @@ def _format_reload_summary(summary: CodingReloadSummary) -> str:
         "Resources:",
         f"- Skills: {_format_reload_category(summary.skills)}",
         f"- Prompt templates: {_format_reload_category(summary.prompt_templates)}",
+        f"- Extensions: {_format_reload_category(summary.extensions)}",
         "Context:",
         f"- Project context files: {_format_reload_category(summary.context_files)}",
         "- Next-turn system prompt: "
