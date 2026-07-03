@@ -121,7 +121,7 @@ class ExtensionRuntime:
         self._runtime_diagnostics: list[ResourceDiagnostic] = []
         self._session: BoundSession | None = None
         self._ui: UiBridge = ui or NullUiBridge()
-        self._turn_requested: Callable[[], None] | None = None
+        self._turn_requested: Callable[[str], None] | None = None
         self._harness_unsubscribe: Callable[[], None] | None = None
 
     # -- loading -----------------------------------------------------------
@@ -281,8 +281,13 @@ class ExtensionRuntime:
         """Install the frontend UI bridge (TUI, print-mode fallback, or test)."""
         self._ui = ui
 
-    def set_turn_requested_callback(self, callback: Callable[[], None] | None) -> None:
-        """Install the host callback used to start a run for idle deliveries."""
+    def set_turn_requested_callback(self, callback: Callable[[str], None] | None) -> None:
+        """Install the host callback used to deliver messages while idle.
+
+        The callback receives the message content and is expected to submit it
+        through the host's serialized run path (the TUI uses the same exclusive
+        worker as user submissions, so extension turns cannot race user runs).
+        """
         self._turn_requested = callback
 
     @property
@@ -318,14 +323,20 @@ class ExtensionRuntime:
     # -- actions (called through ExtensionAPI) --------------------------------
 
     def send_user_message(self, content: str, *, deliver_as: str = "follow_up") -> None:
-        """Queue a user message and request a turn when the session is idle."""
+        """Deliver a user message into the active run, or start one when idle."""
         session = self.session_view
-        if deliver_as == "steer" and session.is_running:
-            session.queue_steering_message(content)
+        if session.is_running:
+            if deliver_as == "steer":
+                session.queue_steering_message(content)
+            else:
+                session.queue_follow_up_message(content)
             return
+        if self._turn_requested is not None:
+            self._turn_requested(content)
+            return
+        # No host run-path registered (print mode, tests): queue for whichever
+        # run happens next.
         session.queue_follow_up_message(content)
-        if not session.is_running and self._turn_requested is not None:
-            self._turn_requested()
 
     async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
         """Persist a `CustomEntry` through the bound session."""
