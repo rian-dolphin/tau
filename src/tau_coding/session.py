@@ -195,6 +195,19 @@ class CodingSessionConfig:
     thinking_level: ThinkingLevel = DEFAULT_THINKING_LEVEL
     index_on_first_persist: bool = False
     shell_command_prefix: str | None = None
+    skills_enabled: bool = True
+    """Whether skill discovery is enabled for this session.
+
+    When ``True`` (the default), skills are discovered from the resource paths
+    and their index is injected into the system prompt as ``<available_skills>``,
+    and ``/skill:`` commands expand against them. When ``False``, skill discovery
+    is suppressed for the whole session: no skills load, the ``<available_skills>``
+    index is omitted, and ``/skill:`` commands find nothing to expand. This mirrors
+    Pi's loader-level ``noSkills`` flag, which suppresses only skill discovery and
+    leaves prompt templates and project context files (AGENTS.md) unaffected. It is
+    the seam hosts use to construct skill-less sessions (e.g. a subagent type that
+    gets no skills).
+    """
     extension_paths: tuple[Path, ...] = ()
     extensions_enabled: bool = True
     project_extensions_enabled: bool = False
@@ -274,7 +287,11 @@ class CodingSession:
             else linear_state
         )
         resource_paths = resource_paths_with_cwd(config.resource_paths, config.cwd)
-        resources = _load_session_resources(resource_paths, config.context_files)
+        resources = _load_session_resources(
+            resource_paths,
+            config.context_files,
+            skills_enabled=config.skills_enabled,
+        )
 
         extension_runtime = config.extension_runtime
         fresh_extension_runtime = extension_runtime is None
@@ -898,7 +915,11 @@ class CodingSession:
         before_tool_names = tuple(tool.name for tool in self._harness.config.tools)
         before_guidelines = self._extension_runtime.prompt_guidelines
 
-        resources = _load_session_resources(self._resource_paths, self._config.context_files)
+        resources = _load_session_resources(
+            self._resource_paths,
+            self._config.context_files,
+            skills_enabled=self._config.skills_enabled,
+        )
         self._reload_extensions()
 
         after_skills = _skill_signatures(resources.skills)
@@ -1042,6 +1063,7 @@ class CodingSession:
                 auto_compact_enabled=self._auto_compact_enabled,
                 thinking_level=self._thinking_level,
                 shell_command_prefix=self._config.shell_command_prefix,
+                skills_enabled=self._config.skills_enabled,
                 extension_paths=self._config.extension_paths,
                 extensions_enabled=self._config.extensions_enabled,
                 project_extensions_enabled=self._config.project_extensions_enabled,
@@ -1951,8 +1973,15 @@ def _system_prompt_resource_signatures(
 def _load_session_resources(
     resource_paths: TauResourcePaths,
     explicit_context_files: tuple[ProjectContextFile, ...],
+    *,
+    skills_enabled: bool = True,
 ) -> SessionResources:
-    loaded_skills, skill_diagnostics = load_skills_with_diagnostics(resource_paths)
+    loaded_skills: list[Skill]
+    skill_diagnostics: list[ResourceDiagnostic]
+    if skills_enabled:
+        loaded_skills, skill_diagnostics = load_skills_with_diagnostics(resource_paths)
+    else:
+        loaded_skills, skill_diagnostics = [], []
     loaded_prompt_templates, prompt_diagnostics = load_prompt_templates_with_diagnostics(
         resource_paths
     )
