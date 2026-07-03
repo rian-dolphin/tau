@@ -150,32 +150,19 @@ See [`examples/extensions/`](../examples/extensions):
 - **`hello_tool.py`** — minimal custom tool.
 - **`permission_gate.py`** — blocks dangerous bash commands with the
   `tool_call` hook.
-- **`subagents/`** — a port of
-  [pi-subagents](https://github.com/tintinweb/pi-subagents): an `agent`
-  tool that spawns autonomous subagents in-process with their own tools and
-  system prompts, foreground and background modes, agent types defined in
-  `.tau/agents/*.md`, a `get_subagent_result` tool, and an `/agents`
-  command. Try it:
 
-  ```bash
-  tau -x examples/extensions/subagents
-  # then: "Use a subagent to summarize this repository's architecture."
-  ```
+A larger, real-world extension lives in its own repository:
+[rian-dolphin/tau-subagents](https://github.com/rian-dolphin/tau-subagents)
+ports [pi-subagents](https://github.com/tintinweb/pi-subagents) — an `agent`
+tool that spawns autonomous subagents in-process with their own tools and
+system prompts, foreground and background modes, agent types defined in
+`.tau/agents/*.md`, a `get_subagent_result` tool, and an `/agents` command.
 
-  Custom agent types are markdown files with frontmatter:
-
-  ```markdown
-  ---
-  description: Reviews code for security issues.
-  tools: read, bash
-  model: gpt-5.2
-  ---
-  You are a security reviewer. Investigate the code you are pointed at and
-  report vulnerabilities with file references.
-  ```
-
-  saved as `.tau/agents/security-reviewer.md` (project) or
-  `~/.tau/agents/security-reviewer.md` (user).
+```bash
+git clone git@github.com:rian-dolphin/tau-subagents.git
+tau -x ./tau-subagents
+# then: "Use a subagent to summarize this repository's architecture."
+```
 
 ## Not yet supported
 
