@@ -83,6 +83,7 @@ class FakeSession:
                 after=len(self.context_files),
                 changed=True,
             ),
+            extensions=ReloadCategorySummary(before=0, after=0, changed=False),
             diagnostics=ReloadCategorySummary(
                 before=0,
                 after=len(self.resource_diagnostics),
