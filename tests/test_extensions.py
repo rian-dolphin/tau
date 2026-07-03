@@ -485,6 +485,54 @@ async def test_tool_call_hook_can_clear_arguments(tmp_path: Path) -> None:
     assert seen == [{}]
 
 
+async def test_wrapped_tool_forwards_on_update(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    _register_inline_extension(runtime, "progress")
+
+    received: list[tuple[str, object]] = []
+
+    async def executor(
+        arguments: object,
+        signal: object = None,
+        *,
+        on_update: object = None,
+    ) -> AgentToolResult:
+        assert on_update is not None
+        on_update("halfway", {"pct": 50})  # type: ignore[operator]
+        return AgentToolResult(tool_call_id="", name="work", ok=True, content="done")
+
+    tool = AgentTool(name="work", description="d", input_schema={}, executor=executor)
+    wrapped = runtime.compose_tools([tool])[0]
+
+    def collect(message: str, data: object = None) -> None:
+        received.append((message, data))
+
+    result = await wrapped.execute({}, on_update=collect)
+
+    assert result.content == "done"
+    assert received == [("halfway", {"pct": 50})]
+
+
+async def test_wrapped_tool_drops_on_update_for_inner_without_seam(tmp_path: Path) -> None:
+    # The wrapper always declares on_update, but the inner executor's own
+    # inspect-gate must drop it so a classic (arguments, signal) tool still runs.
+    runtime = ExtensionRuntime()
+    _register_inline_extension(runtime, "plain")
+
+    async def executor(arguments: object, signal: object = None) -> AgentToolResult:
+        return AgentToolResult(tool_call_id="", name="plain", ok=True, content="ran")
+
+    tool = AgentTool(name="plain", description="d", input_schema={}, executor=executor)
+    wrapped = runtime.compose_tools([tool])[0]
+
+    def collect(message: str, data: object = None) -> None:
+        raise AssertionError("on_update should not reach an executor without the seam")
+
+    result = await wrapped.execute({}, on_update=collect)
+
+    assert result.content == "ran"
+
+
 async def test_raising_tool_call_hook_blocks_fail_safe(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "raiser")
