@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Mapping
-from dataclasses import dataclass
-from typing import Protocol
+from dataclasses import dataclass, field
+from typing import Protocol, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -19,6 +20,21 @@ class ToolCancellationToken(Protocol):
         ...
 
 
+class ToolUpdateCallback(Protocol):
+    """Sync, fire-and-forget progress callback passed to opt-in executors.
+
+    A tool reports live progress by calling this during execution. The loop
+    bridges each call to a `ToolExecutionUpdateEvent(message, data)`. The
+    payload is deliberately lighter than Pi's full-`AgentToolResult` partial:
+    Tau's update event carries only a human-readable ``message`` and optional
+    structured ``data`` (no ``content``/``details`` echo).
+    """
+
+    def __call__(self, message: str, data: dict[str, JSONValue] | None = None) -> None:
+        """Report a progress update."""
+        ...
+
+
 class ToolExecutor(Protocol):
     """Async callable used to execute a tool."""
 
@@ -28,6 +44,26 @@ class ToolExecutor(Protocol):
         signal: ToolCancellationToken | None = None,
     ) -> Awaitable[AgentToolResult]:
         """Execute the tool with optional cancellation support."""
+        ...
+
+
+class ToolExecutorWithUpdate(Protocol):
+    """Executor variant that also accepts a progress callback.
+
+    Executors that want to report live progress declare an ``on_update``
+    keyword parameter. `AgentTool.execute` detects this at construction time
+    (via `inspect.signature`) and forwards the callback only to executors that
+    accept it, so existing `ToolExecutor` implementations are untouched.
+    """
+
+    def __call__(
+        self,
+        arguments: Mapping[str, JSONValue],
+        signal: ToolCancellationToken | None = None,
+        *,
+        on_update: ToolUpdateCallback | None = None,
+    ) -> Awaitable[AgentToolResult]:
+        """Execute the tool, optionally reporting progress via ``on_update``."""
         ...
 
 
@@ -68,11 +104,29 @@ class AgentTool:
     executor: ToolExecutor
     prompt_snippet: str | None = None
     prompt_guidelines: tuple[str, ...] = ()
+    _accepts_on_update: bool = field(init=False, repr=False, compare=False, default=False)
+
+    def __post_init__(self) -> None:
+        # Detect the opt-in progress seam once, at construction. Executors that
+        # declare an `on_update` parameter receive the progress callback;
+        # every other executor keeps its original `(arguments, signal)` call.
+        accepts = "on_update" in inspect.signature(self.executor).parameters
+        object.__setattr__(self, "_accepts_on_update", accepts)
 
     async def execute(
         self,
         arguments: Mapping[str, JSONValue],
         signal: ToolCancellationToken | None = None,
+        *,
+        on_update: ToolUpdateCallback | None = None,
     ) -> AgentToolResult:
-        """Execute the tool with provider-neutral JSON-like arguments."""
+        """Execute the tool with provider-neutral JSON-like arguments.
+
+        ``on_update`` is forwarded only to executors that opt in by declaring an
+        ``on_update`` parameter; for all other executors it is dropped so the
+        original signature is preserved.
+        """
+        if on_update is not None and self._accepts_on_update:
+            executor = cast("ToolExecutorWithUpdate", self.executor)
+            return await executor(arguments, signal=signal, on_update=on_update)
         return await self.executor(arguments, signal=signal)

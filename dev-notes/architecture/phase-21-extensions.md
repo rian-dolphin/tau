@@ -34,7 +34,7 @@ are called out inline as **Ruling:** notes.
 - npm-style package management (`pi install`), provider registration,
   custom TUI components/widgets/renderers, shortcut and flag registration,
   system-prompt replacement, `context`/`before_provider_request` rewriting,
-  partial tool-result streaming (`onUpdate`), and a project trust store.
+  and a project trust store.
   These have reserved names and documented extension points but no
   implementation yet.
 
@@ -168,6 +168,32 @@ the executor signature (`tau_agent/tools.py`) does not receive the call id —
 the loop stamps it after execution. Extensions that need id correlation use
 the observation events (`tool_execution_start/end`), which carry the full
 `ToolCall`/`AgentToolResult`.
+
+**Ruling:** live tool-execution progress (Pi's `onUpdate`) is implemented, but
+with a lighter payload than Pi. A tool reports progress through an opt-in
+`on_update` callback (`ToolUpdateCallback`, `tau_agent/tools.py`) whose
+signature is `(message: str, data: dict[str, JSONValue] | None = None) -> None`
+— deliberately *not* Pi's `onUpdate(partialResult: AgentToolResult)`. The loop
+turns each call into the already-defined `ToolExecutionUpdateEvent(tool_call_id,
+message, data)`, which carries no `content`/`details`/`ok` echo of a partial
+result. Rationale: Tau's update event exists to drive a progress line, not to
+re-render a partial tool result; extensions that need the full result read the
+terminal `tool_execution_end`. `on_update` is sync and fire-and-forget (matching
+Pi); the loop bridges calls onto the async event stream via an unbounded queue
+and a task/queue race in `_execute_tool`, preserving order and never dropping the
+final result (even on tool error or a closed/cancelled stream).
+
+**Ruling:** the `on_update` seam is *opt-in via signature inspection*, not a
+changed executor signature. `AgentTool` detects at construction (once, in
+`__post_init__` via `inspect.signature`) whether its executor declares an
+`on_update` parameter, and `AgentTool.execute` forwards the callback only to
+executors that do. This keeps every existing `(arguments, signal)` executor —
+all built-in tools — untouched, rather than mechanically adding `on_update=None`
+to each. The alternative (widen the `ToolExecutor` protocol) was rejected because
+it would force the parameter on every executor and break structural typing for
+the built-ins. The extension runtime's tool wrapper (`_wrap_tool`) always
+declares `on_update` and forwards it; the *inner* tool's inspect-gate still drops
+it for wrapped executors that do not accept it.
 
 **Ruling:** provider token usage is surfaced on `AssistantMessage.usage`
 (matching Pi's placement on `AssistantMessage.usage`, `packages/ai/src/types.ts`),
@@ -335,8 +361,10 @@ the core of `tintinweb/pi-subagents`:
   `extensions_enabled=False` so subagents cannot recursively spawn) — the
   Python analog of Pi's `createAgentSession`, no CLI subprocess needed;
 - foreground runs block and return the subagent's final assistant text
-  (no inline progress in v1 — partial tool-result streaming is an explicit
-  non-goal until `ToolExecutionUpdateEvent` emission lands in `tau_agent`);
+  (the example does not yet report inline progress, though the `on_update`
+  seam and `ToolExecutionUpdateEvent` emission now exist in `tau_agent` — see
+  the live-progress Ruling above — so wiring child activity into `on_update`
+  is now possible);
   background runs return an id immediately and deliver completion through
   `send_user_message(deliver_as="follow_up")`, which also exercises the
   idle `turn_requested` path.

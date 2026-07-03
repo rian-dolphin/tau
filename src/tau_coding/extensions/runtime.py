@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Protocol
 
 from tau_agent.events import AgentEvent
-from tau_agent.tools import AgentTool, AgentToolResult, ToolCancellationToken
+from tau_agent.tools import (
+    AgentTool,
+    AgentToolResult,
+    ToolCancellationToken,
+    ToolUpdateCallback,
+)
 from tau_agent.types import JSONValue
 from tau_coding.commands import (
     CommandContext,
@@ -388,6 +393,8 @@ class ExtensionRuntime:
         async def executor(
             arguments: Mapping[str, JSONValue],
             signal: ToolCancellationToken | None = None,
+            *,
+            on_update: ToolUpdateCallback | None = None,
         ) -> AgentToolResult:
             call_outcome = await self._run_tool_call_hooks(tool.name, arguments)
             if call_outcome.block:
@@ -403,7 +410,11 @@ class ExtensionRuntime:
             effective_arguments = (
                 call_outcome.arguments if call_outcome.arguments is not None else arguments
             )
-            result = await tool.execute(effective_arguments, signal=signal)
+            # The wrapper always declares `on_update`; the inner tool's own
+            # inspect-gate drops it for executors that do not accept it.
+            result = await tool.execute(
+                effective_arguments, signal=signal, on_update=on_update
+            )
             return await self._run_tool_result_hooks(tool.name, effective_arguments, result)
 
         return AgentTool(
