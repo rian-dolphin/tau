@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 from tau_agent.events import AgentEvent
+from tau_agent.messages import AgentMessage
 from tau_agent.tools import (
     AgentTool,
     AgentToolResult,
@@ -73,6 +74,9 @@ class BoundSession(Protocol):
 
     @property
     def is_running(self) -> bool: ...
+
+    @property
+    def messages(self) -> tuple[AgentMessage, ...]: ...
 
     def queue_steering_message(self, content: str) -> None: ...
 
