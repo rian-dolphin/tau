@@ -41,6 +41,7 @@ from tau_coding import (
     OpenAICompatibleProviderConfig,
     ProviderConfigError,
     ProviderSettings,
+    ResourceError,
     ScopedModelConfig,
     SessionManager,
     SessionTreeBranchResult,
@@ -1859,6 +1860,77 @@ async def test_session_loads_and_expands_skills(tmp_path: Path) -> None:
     assert "References are relative to" in provider.calls[0][2][0].content
     assert provider.calls[0][2][0].content.endswith("</skill>\n\nadd tests")
     assert session.handle_command("/skill:testing").handled is False
+
+
+@pytest.mark.anyio
+async def test_session_skills_disabled_suppresses_skill_index(tmp_path: Path) -> None:
+    resource_root = tmp_path / "resources"
+    skills_dir = resource_root / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "testing.md").write_text(
+        "---\ndescription: Test code\n---\n# Testing",
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text("Follow project rules.", encoding="utf-8")
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="Done")),
+            ]
+        ]
+    )
+    config = CodingSessionConfig(
+        provider=provider,
+        model="fake",
+        storage=storage,
+        cwd=tmp_path,
+        skills_enabled=False,
+        resource_paths=TauResourcePaths(root=resource_root, agents_root=None),
+    )
+    session = await CodingSession.load(config)
+
+    _events = await _collect_session_events(session.prompt("Hello"))
+
+    # Skill discovery is suppressed: no skills, no <available_skills> index.
+    assert session.skills == ()
+    assert "<available_skills>" not in provider.calls[0][1]
+    # Project context (AGENTS.md) remains unaffected by disabling skills.
+    assert "Follow project rules." in provider.calls[0][1]
+    assert [Path(context_file.path).name for context_file in session.context_files] == ["AGENTS.md"]
+    # /skill: commands have nothing to expand against.
+    with pytest.raises(ResourceError):
+        session.expand_prompt_text("/skill:testing")
+
+
+@pytest.mark.anyio
+async def test_session_reload_preserves_disabled_skills(tmp_path: Path) -> None:
+    resource_root = tmp_path / "resources"
+    skills_dir = resource_root / "skills"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "testing.md").write_text(
+        "---\ndescription: Test code\n---\n# Testing",
+        encoding="utf-8",
+    )
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=FakeProvider([]),
+            model="fake",
+            storage=storage,
+            cwd=tmp_path,
+            skills_enabled=False,
+            resource_paths=TauResourcePaths(root=resource_root, agents_root=None),
+        )
+    )
+
+    assert session.skills == ()
+
+    session.reload()
+
+    assert session.skills == ()
+    assert "<available_skills>" not in session.system_prompt
 
 
 @pytest.mark.anyio
