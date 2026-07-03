@@ -38,6 +38,12 @@ are called out inline as **Ruling:** notes.
   These have reserved names and documented extension points but no
   implementation yet.
 
+When any of these lands, design it from Pi's implementation first
+(`packages/coding-agent/src/core/extensions/` and `docs/extensions.md` in
+`earendil-works/pi`) and port that design — names, semantics, event shapes —
+unless a strictly better way exists. Deviations get a **Ruling:** note with
+the reason, like the ones below.
+
 ## Discovery and loading
 
 Extension locations, in load order (first-registered wins on name conflicts,
