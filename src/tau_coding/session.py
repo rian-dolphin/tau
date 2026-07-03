@@ -326,6 +326,7 @@ class CodingSession:
                     custom_prompt=config.custom_system_prompt,
                     append_system_prompt=config.append_system_prompt,
                     context_files=resources.context_files,
+                    extra_guidelines=extension_runtime.prompt_guidelines,
                 )
             )
         )
@@ -969,6 +970,7 @@ class CodingSession:
         )
         before_extensions = _extension_signatures(self._extension_runtime)
         before_tool_names = tuple(tool.name for tool in self._harness.config.tools)
+        before_guidelines = self._extension_runtime.prompt_guidelines
 
         resources = _load_session_resources(self._resource_paths, self._config.context_files)
         self._reload_extensions()
@@ -982,12 +984,14 @@ class CodingSession:
         )
         after_extensions = _extension_signatures(self._extension_runtime)
         after_tool_names = tuple(tool.name for tool in self._harness.config.tools)
+        after_guidelines = self._extension_runtime.prompt_guidelines
 
         rebuilt_system_prompt: str | None = None
         system_prompt_rebuilt = False
         if self._config.system is None and (
             before_system_prompt_inputs != after_system_prompt_inputs
             or before_tool_names != after_tool_names
+            or before_guidelines != after_guidelines
         ):
             rebuilt_system_prompt = build_system_prompt(
                 BuildSystemPromptOptions(
@@ -997,6 +1001,7 @@ class CodingSession:
                     custom_prompt=self._config.custom_system_prompt,
                     append_system_prompt=self._config.append_system_prompt,
                     context_files=resources.context_files,
+                    extra_guidelines=after_guidelines,
                 )
             )
             system_prompt_rebuilt = True
