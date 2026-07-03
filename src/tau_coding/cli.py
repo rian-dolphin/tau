@@ -17,6 +17,7 @@ from tau_ai import (
 from tau_ai.env import DEFAULT_OPENAI_COMPATIBLE_BASE_URL
 from tau_coding import __version__
 from tau_coding.credentials import FileCredentialStore
+from tau_coding.extensions import StderrUiBridge
 from tau_coding.provider_config import (
     DEFAULT_MODEL,
     DEFAULT_PROVIDER_NAME,
@@ -166,6 +167,28 @@ def main(
             help="Automatically compact TUI context above this rough token estimate.",
         ),
     ] = None,
+    extension: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--extension",
+            "-x",
+            help="Load an extension file or directory (repeatable).",
+        ),
+    ] = None,
+    no_extensions: Annotated[
+        bool,
+        typer.Option(
+            "--no-extensions",
+            help="Disable extension directory discovery (explicit -x paths still load).",
+        ),
+    ] = False,
+    project_extensions: Annotated[
+        bool,
+        typer.Option(
+            "--project-extensions",
+            help="Also load project .tau/extensions (runs project-supplied code at startup).",
+        ),
+    ] = False,
     version: Annotated[
         bool,
         typer.Option("--version", help="Show Tau's version and exit."),
@@ -221,6 +244,8 @@ def main(
         )
         raise typer.Exit()
 
+    extension_paths = tuple(extension or ())
+
     if prompt_option is None:
         notice = _startup_update_notice()
         try:
@@ -234,6 +259,9 @@ def main(
                 auto_compact_threshold,
                 initial_prompt,
                 notice,
+                extension_paths,
+                not no_extensions,
+                project_extensions,
             )
         except RuntimeError as exc:
             raise typer.BadParameter(str(exc)) from exc
@@ -248,7 +276,18 @@ def main(
         typer.echo(notice.message, err=True)
 
     try:
-        ok = anyio.run(run_openai_print_mode, prompt, model, cwd or Path.cwd(), output, provider)
+        ok = anyio.run(
+            run_openai_print_mode,
+            prompt,
+            model,
+            cwd or Path.cwd(),
+            output,
+            provider,
+            None,
+            extension_paths,
+            not no_extensions,
+            project_extensions,
+        )
     except RuntimeError as exc:
         raise typer.BadParameter(str(exc)) from exc
     if not ok:
@@ -264,6 +303,9 @@ async def run_openai_tui(
     auto_compact_token_threshold: int | None = None,
     initial_prompt: str | None = None,
     update_notice: UpdateNotice | None = None,
+    extension_paths: tuple[Path, ...] = (),
+    extensions_enabled: bool = True,
+    project_extensions_enabled: bool = False,
 ) -> None:
     """Run the Textual TUI with the default OpenAI-compatible provider."""
     await run_tui_app(
@@ -275,6 +317,9 @@ async def run_openai_tui(
         auto_compact_token_threshold=auto_compact_token_threshold,
         initial_prompt=initial_prompt,
         startup_notice=update_notice.message if update_notice is not None else None,
+        extension_paths=extension_paths,
+        extensions_enabled=extensions_enabled,
+        project_extensions_enabled=project_extensions_enabled,
     )
 
 
@@ -432,6 +477,9 @@ async def run_openai_print_mode(
     output: PrintOutputMode = PrintOutputMode.text,
     provider_name: str | None = None,
     session_manager: SessionManager | None = None,
+    extension_paths: tuple[Path, ...] = (),
+    extensions_enabled: bool = True,
+    project_extensions_enabled: bool = False,
 ) -> bool:
     """Run print mode with the OpenAI-compatible provider configured from the environment."""
     settings = load_provider_settings()
@@ -458,6 +506,9 @@ async def run_openai_print_mode(
             provider_settings=settings,
             runtime_provider_config=selection.provider,
             shell_command_prefix=shell_settings.shell_command_prefix,
+            extension_paths=extension_paths,
+            extensions_enabled=extensions_enabled,
+            project_extensions_enabled=project_extensions_enabled,
         )
     finally:
         await provider.aclose()
@@ -478,6 +529,9 @@ async def run_print_mode(
     provider_settings: ProviderSettings | None = None,
     runtime_provider_config: ProviderConfig | None = None,
     shell_command_prefix: str | None = None,
+    extension_paths: tuple[Path, ...] = (),
+    extensions_enabled: bool = True,
+    project_extensions_enabled: bool = False,
 ) -> bool:
     """Run one non-interactive prompt and print streamed events.
 
@@ -497,8 +551,12 @@ async def run_print_mode(
             provider_settings=provider_settings,
             runtime_provider_config=runtime_provider_config,
             shell_command_prefix=shell_command_prefix,
+            extension_paths=extension_paths,
+            extensions_enabled=extensions_enabled,
+            project_extensions_enabled=project_extensions_enabled,
         )
     )
+    session.extension_runtime.set_ui_bridge(StderrUiBridge())
     renderer = create_event_renderer(output)
     try:
         terminal_command = parse_terminal_command(prompt)

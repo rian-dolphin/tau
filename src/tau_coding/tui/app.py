@@ -147,6 +147,28 @@ class LoginRequiredProvider:
         return iterator()
 
 
+class _TuiExtensionUiBridge:
+    """Route extension UI requests to the running Textual app."""
+
+    _SEVERITIES: ClassVar[dict[str, Literal["information", "warning", "error"]]] = {
+        "info": "information",
+        "warning": "warning",
+        "error": "error",
+    }
+
+    def __init__(self, app: TauTuiApp) -> None:
+        self._app = app
+
+    @property
+    def has_ui(self) -> bool:
+        """Return True: an interactive TUI is attached."""
+        return True
+
+    def notify(self, message: str, level: str = "info") -> None:
+        """Show an extension notification through the app's dedupe path."""
+        self._app._notify(message, severity=self._SEVERITIES.get(level, "information"))
+
+
 class CompletionActionTarget(Protocol):
     """App actions used by the prompt input completion bindings."""
 
@@ -1784,6 +1806,7 @@ class TauTuiApp(App[None]):
         self._prompt_history: tuple[str, ...] = ()
         self._load_session_messages_from_session()
         self.adapter = TuiEventAdapter(self.state)
+        self._connect_extension_runtime(session)
         self._prompt_worker: Worker[None] | None = None
         self._compaction_worker: Worker[None] | None = None
         self._prompt_run_id = 0
@@ -2090,6 +2113,27 @@ class TauTuiApp(App[None]):
         self._follow_transcript_output()
         self._refresh()
         self._prompt_worker = self.run_worker(self._run_prompt(text, run_id), exclusive=True)
+
+    def _connect_extension_runtime(self, session: CodingSession) -> None:
+        """Give the extension runtime a UI bridge and an idle-run entry point."""
+        runtime = getattr(session, "extension_runtime", None)
+        if runtime is None:
+            return
+        runtime.set_ui_bridge(_TuiExtensionUiBridge(self))
+        runtime.set_turn_requested_callback(self._on_extension_turn_requested)
+
+    def _on_extension_turn_requested(self, content: str) -> None:
+        """Deliver an extension message through the serialized prompt path."""
+        self.call_later(self._deliver_extension_message, content)
+
+    def _deliver_extension_message(self, content: str) -> None:
+        if self.session.is_running or self._prompt_worker is not None:
+            # A run started while the delivery was in flight; drain with it.
+            queue_follow_up = getattr(self.session, "queue_follow_up_message", None)
+            if callable(queue_follow_up):
+                queue_follow_up(content)
+            return
+        self._submit_prompt(content)
 
     def _follow_transcript_output(self) -> None:
         """Put the transcript back in follow mode for explicit user actions."""
@@ -3725,6 +3769,9 @@ async def run_tui_app(
     initial_prompt: str | None = None,
     session_manager: SessionManager | None = None,
     startup_notice: str | None = None,
+    extension_paths: tuple[Path, ...] = (),
+    extensions_enabled: bool = True,
+    project_extensions_enabled: bool = False,
 ) -> None:
     """Create the default provider/session and run the Textual app."""
     if new_session and session_id is not None:
@@ -3785,6 +3832,9 @@ async def run_tui_app(
                 auto_compact_token_threshold=auto_compact_token_threshold,
                 index_on_first_persist=index_on_first_persist,
                 shell_command_prefix=shell_settings.shell_command_prefix,
+                extension_paths=extension_paths,
+                extensions_enabled=extensions_enabled,
+                project_extensions_enabled=project_extensions_enabled,
             )
         )
         app = TauTuiApp(
