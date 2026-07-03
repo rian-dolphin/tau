@@ -131,9 +131,31 @@ class ExtensionAPI:
 ```
 
 `ExtensionContext` exposes `cwd`, `model`, `provider_name`, `session_id`,
-`system_prompt`, `is_running`, and `has_ui`. It is a live view over the
-bound `CodingSession`; action methods raise `ExtensionError` if called
-before binding (Pi's throwing-stubs-then-`bindCore` model).
+`system_prompt`, `is_running`, `has_ui`, and `transcript`. It is a live view
+over the bound `CodingSession`; action methods raise `ExtensionError` if
+called before binding (Pi's throwing-stubs-then-`bindCore` model).
+
+`transcript -> tuple[AgentMessage, ...]` gives read access to the active-path
+parent conversation (`CodingSession.messages`). It is the Tau analogue of the
+only conversation surface Pi hands extensions — `ctx.sessionManager.getBranch()`
+— and exists so a subagent extension can port pi-subagents'
+`buildParentContext` (an `inherit_context` text prepend built from the parent
+branch) without `src/tau_agent` importing `src/tau_coding`.
+
+**Ruling:** `context.transcript` returns **deep copies** of the messages, not
+the live objects. Pi leans on TypeScript `Readonly<...>` types on `getBranch()`
+for compile-time read-only-ness; Python has no such guarantee and Tau's message
+models are mutable pydantic instances, so an extension holding a live object
+could silently corrupt the session transcript. Copying is the enforcement.
+This is a deliberate deviation from Pi (which returns live references). Semantic
+parity otherwise: Pi's branch keeps user/assistant/tool entries and renders
+compaction summaries from an explicit `compaction` entry `summary`. Tau has no
+separate summary entry in `messages` — compaction and branch summaries are
+already folded into the transcript as `UserMessage`s (`Previous conversation
+summary:\n...` / `<summary>...</summary>`), so an extension building a digest
+sees them as user turns rather than a distinct `[Summary]` type. If exact
+`[Summary]` parity is ever needed, expose branch *entries* instead; not done in
+v1.
 
 Event handlers may be sync or async; async handlers are awaited. Handlers
 run on the session's event loop, so they must be fast — slow work belongs in
