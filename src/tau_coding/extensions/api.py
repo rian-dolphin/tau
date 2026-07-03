@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -170,6 +171,19 @@ class NullUiBridge:
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Ignore notifications without a UI."""
+
+
+class StderrUiBridge:
+    """UI bridge that writes extension notifications to stderr (print mode)."""
+
+    @property
+    def has_ui(self) -> bool:
+        """Return False: print mode has no interactive UI."""
+        return False
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Print the notification to stderr."""
+        print(f"[extension:{level}] {message}", file=sys.stderr)
 
 
 @dataclass(frozen=True, slots=True)
