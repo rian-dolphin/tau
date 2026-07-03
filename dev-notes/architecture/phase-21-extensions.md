@@ -294,8 +294,9 @@ follow-up that can flip the project default.
 
 ## Example extension: subagents
 
-`examples/extensions/subagents.py` ports the core of
-`tintinweb/pi-subagents`:
+The subagents extension lives in its own repository
+(`rian-dolphin/tau-subagents`, private) rather than in this repo. It ports
+the core of `tintinweb/pi-subagents`:
 
 - registers an `agent` tool (`prompt`, `description`, `subagent_type`,
   `run_in_background`) plus `get_subagent_result`;
