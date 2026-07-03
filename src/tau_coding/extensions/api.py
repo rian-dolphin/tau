@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from tau_agent.messages import AgentMessage
 from tau_agent.tools import AgentTool, AgentToolResult
 from tau_agent.types import JSONValue
 
@@ -230,6 +231,20 @@ class ExtensionContext:
     def is_running(self) -> bool:
         """Return whether an agent run is currently active."""
         return self._runtime.session_view.is_running
+
+    @property
+    def transcript(self) -> tuple[AgentMessage, ...]:
+        """Return the active-path parent conversation as read-only copies.
+
+        Mirrors the read access Pi extensions get via
+        ``ctx.sessionManager.getBranch()``: the user/assistant/tool messages on
+        the current branch, with compaction and branch summaries already folded
+        in as ``UserMessage`` entries (Tau has no separate summary message
+        type). Each message is deep-copied so an extension mutating a returned
+        object cannot corrupt the live session transcript.
+        """
+        messages = self._runtime.session_view.messages
+        return tuple(message.model_copy(deep=True) for message in messages)
 
     @property
     def has_ui(self) -> bool:

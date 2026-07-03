@@ -5,9 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from tau_agent import AssistantMessage, ToolCall
+from tau_agent import AssistantMessage, ToolCall, UserMessage
+from tau_agent.messages import AgentMessage
 from tau_agent.session import CustomEntry, JsonlSessionStorage
 from tau_agent.tools import AgentTool, AgentToolResult
+from tau_agent.types import JSONValue
 from tau_ai import FakeProvider, ProviderResponseEndEvent, ProviderResponseStartEvent
 from tau_coding import CodingSession, CodingSessionConfig, TauResourcePaths
 from tau_coding.extensions import (
@@ -98,9 +100,10 @@ class RecordingSession:
         self.session_id = "session-1"
         self.system_prompt = "You are Tau."
         self.is_running = running
+        self.messages: tuple[AgentMessage, ...] = ()
         self.steered: list[str] = []
         self.followed_up: list[str] = []
-        self.custom_entries: list[tuple[str, dict[str, object]]] = []
+        self.custom_entries: list[tuple[str, dict[str, JSONValue]]] = []
 
     def queue_steering_message(self, content: str) -> None:
         self.steered.append(content)
@@ -108,7 +111,7 @@ class RecordingSession:
     def queue_follow_up_message(self, content: str) -> None:
         self.followed_up.append(content)
 
-    async def append_custom_entry(self, namespace: str, data: dict[str, object]) -> None:
+    async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
         self.custom_entries.append((namespace, data))
 
 
@@ -746,6 +749,47 @@ async def test_append_entry_routes_to_session(tmp_path: Path) -> None:
     await api.append_entry("persister:record", {"value": 1})
 
     assert session.custom_entries == [("persister:record", {"value": 1})]
+
+
+def test_transcript_is_empty_at_session_start(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "reader")
+    session = RecordingSession(tmp_path)
+    runtime.bind(session)
+
+    assert api.context.transcript == ()  # type: ignore[attr-defined]
+
+
+def test_transcript_exposes_prior_messages_in_order(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "reader")
+    session = RecordingSession(tmp_path)
+    session.messages = (
+        UserMessage(content="what does foo do?"),
+        AssistantMessage(content="foo returns bar"),
+    )
+    runtime.bind(session)
+
+    transcript = api.context.transcript  # type: ignore[attr-defined]
+
+    assert [message.role for message in transcript] == ["user", "assistant"]
+    assert [message.content for message in transcript] == [
+        "what does foo do?",
+        "foo returns bar",
+    ]
+
+
+def test_transcript_returns_copies_so_mutation_cannot_corrupt_session(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "reader")
+    session = RecordingSession(tmp_path)
+    session.messages = (UserMessage(content="original"),)
+    runtime.bind(session)
+
+    transcript = api.context.transcript  # type: ignore[attr-defined]
+    transcript[0].content = "tampered"
+
+    assert session.messages[0].content == "original"
 
 
 def _register_inline_extension(runtime: ExtensionRuntime, name: str) -> object:
