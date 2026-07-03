@@ -71,6 +71,7 @@ def setup(tau):
     # registration
     tau.register_tool(agent_tool)            # tau_agent.tools.AgentTool
     tau.register_command("name", handler, description="...")
+    tau.add_prompt_guideline("Never commit directly to main")
     tau.on("event_name", handler)            # or @tau.on("event_name")
 
     # actions — valid once the session is running, not during setup
@@ -94,8 +95,13 @@ is bound — register handlers in `setup` and act on events instead.
 description, a hand-written JSON-schema `input_schema`, and an async
 executor `(arguments, signal=None) -> AgentToolResult`. Give the tool a
 `prompt_snippet` to list it in the system prompt's "Available tools"
-section. Registering a tool with a built-in's name (`read`, `write`,
-`edit`, `bash`) replaces the built-in.
+section, and `prompt_guidelines` for usage guidance tied to the tool.
+Registering a tool with a built-in's name (`read`, `write`, `edit`,
+`bash`) replaces the built-in.
+
+For behavioral guidance not tied to any tool, `add_prompt_guideline(text)`
+adds a line to the system prompt's Guidelines section (de-duplicated at
+build time; `/reload` rebuilds the prompt when guidelines change).
 
 ### Commands
 

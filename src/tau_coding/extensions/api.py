@@ -278,6 +278,15 @@ class ExtensionAPI:
             aliases=aliases,
         )
 
+    def add_prompt_guideline(self, guideline: str) -> None:
+        """Add a standalone guideline line to the system prompt.
+
+        Tool-attached guidance belongs on the tool (`prompt_snippet`,
+        `prompt_guidelines`); this is for behavioral guidance not tied to
+        any tool. Duplicate lines are de-duplicated at prompt build time.
+        """
+        self._runtime.register_prompt_guideline(self._extension_name, guideline)
+
     def on(
         self,
         event: str,

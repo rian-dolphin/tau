@@ -404,6 +404,16 @@ def _command_context(registry: object, text: str, name: str, args: str) -> objec
     return CommandContext(session=None, registry=registry, text=text, name=name, args=args)  # type: ignore[arg-type]
 
 
+def test_prompt_guideline_registration(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "guidance")
+    api.add_prompt_guideline("Always run the tests before claiming success")
+    api.add_prompt_guideline("   ")
+
+    assert runtime.prompt_guidelines == ("Always run the tests before claiming success",)
+    assert any("empty prompt guideline" in diag.message for diag in runtime.diagnostics)
+
+
 def test_unknown_event_subscription_is_a_diagnostic(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     _write_extension(
@@ -718,6 +728,36 @@ async def test_session_exposes_extension_tools_and_commands(tmp_path: Path) -> N
     assert result.message == "extension says hi"
 
     assert "hello" in session.system_prompt
+
+
+async def test_extension_guideline_reaches_system_prompt(tmp_path: Path) -> None:
+    body = (
+        "def setup(tau):\n"
+        "    tau.add_prompt_guideline('Never commit directly to main')\n"
+    )
+    session = await CodingSession.load(
+        _session_config(tmp_path, FakeProvider([]), extension_body=body)
+    )
+
+    assert "Never commit directly to main" in session.system_prompt
+
+
+async def test_reload_picks_up_guideline_changes(tmp_path: Path) -> None:
+    provider = FakeProvider([])
+    session = await CodingSession.load(_session_config(tmp_path, provider))
+    assert "Prefer uv over pip" not in session.system_prompt
+
+    paths = _paths(tmp_path)
+    _write_extension(
+        _user_extensions_dir(paths),
+        "late_guideline",
+        "def setup(tau):\n    tau.add_prompt_guideline('Prefer uv over pip')\n",
+    )
+
+    summary = session.reload()
+
+    assert summary.system_prompt_rebuilt is True
+    assert "Prefer uv over pip" in session.system_prompt
 
 
 async def test_session_start_event_fires_on_load(tmp_path: Path) -> None:

@@ -176,7 +176,11 @@ JSON-schema `input_schema`, async executor) — the same hand-written-schema
 convention as built-ins (ADR 0002). First registration wins per name; an
 extension tool with a built-in's name replaces the built-in (Pi's override
 rule). Registered tools appear in the system prompt tool list, the TUI
-sidebar, and `/session` counts like built-ins.
+sidebar, and `/session` counts like built-ins. Tool-attached
+`prompt_snippet`/`prompt_guidelines` flow into the system prompt as for
+built-ins, and `add_prompt_guideline` contributes standalone guideline
+lines through `BuildSystemPromptOptions.extra_guidelines` (rebuilt on
+`/reload` when they change).
 
 ### Commands
 

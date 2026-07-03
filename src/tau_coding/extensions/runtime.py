@@ -117,6 +117,7 @@ class ExtensionRuntime:
         self._extensions: list[RegisteredExtension] = []
         self._tools: dict[str, RegisteredExtensionTool] = {}
         self._commands: dict[str, ExtensionCommand] = {}
+        self._prompt_guidelines: list[tuple[str, str]] = []
         self._load_diagnostics: list[ResourceDiagnostic] = []
         self._runtime_diagnostics: list[ResourceDiagnostic] = []
         self._session: BoundSession | None = None
@@ -153,6 +154,7 @@ class ExtensionRuntime:
         self._extensions.clear()
         self._tools.clear()
         self._commands.clear()
+        self._prompt_guidelines.clear()
         self._load_diagnostics.clear()
         self._runtime_diagnostics.clear()
         unload_extension_modules()
@@ -187,6 +189,11 @@ class ExtensionRuntime:
             for name, command in self._commands.items()
             if command.extension != extension_name
         }
+        self._prompt_guidelines = [
+            (extension, guideline)
+            for extension, guideline in self._prompt_guidelines
+            if extension != extension_name
+        ]
 
     # -- registration (called through ExtensionAPI) -------------------------
 
@@ -240,6 +247,20 @@ class ExtensionRuntime:
             aliases=aliases,
             handler=handler,
         )
+
+    def register_prompt_guideline(self, extension_name: str, guideline: str) -> None:
+        """Register a standalone system-prompt guideline line."""
+        normalized = guideline.strip()
+        if not normalized:
+            self._load_diagnostics.append(
+                ResourceDiagnostic(
+                    kind="extension",
+                    name=extension_name,
+                    message="empty prompt guideline ignored",
+                )
+            )
+            return
+        self._prompt_guidelines.append((extension_name, normalized))
 
     def subscribe(self, extension_name: str, event: str, handler: ExtensionHandler) -> None:
         """Subscribe an extension handler to a named event."""
@@ -319,6 +340,11 @@ class ExtensionRuntime:
     def extension_tools(self) -> tuple[AgentTool, ...]:
         """Return extension-registered tools in registration order."""
         return tuple(registration.tool for registration in self._tools.values())
+
+    @property
+    def prompt_guidelines(self) -> tuple[str, ...]:
+        """Return standalone guideline lines in registration order."""
+        return tuple(guideline for _, guideline in self._prompt_guidelines)
 
     # -- actions (called through ExtensionAPI) --------------------------------
 
