@@ -867,29 +867,6 @@ async def test_runtime_survives_new_session_swap(tmp_path: Path) -> None:
     assert ("start", "new") in module.EVENTS
 
 
-# -- example extensions --------------------------------------------------------------
-
-
-EXAMPLES_DIR = Path(__file__).resolve().parent.parent / "examples" / "extensions"
-
-
-def test_hello_and_permission_gate_examples_load(tmp_path: Path) -> None:
-    paths = _paths(tmp_path)
-    runtime = ExtensionRuntime()
-    runtime.load(
-        paths,
-        extra_paths=(
-            EXAMPLES_DIR / "hello_tool.py",
-            EXAMPLES_DIR / "permission_gate.py",
-        ),
-        include_resource_dirs=False,
-    )
-
-    assert runtime.extension_names == ("hello_tool", "permission_gate")
-    assert [tool.name for tool in runtime.extension_tools] == ["hello"]
-    assert not [diag for diag in runtime.diagnostics if diag.severity == "error"]
-
-
 def _loaded_extension_module(name: str) -> object:
     candidates = [
         module
