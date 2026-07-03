@@ -1,6 +1,6 @@
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -8,12 +8,15 @@ import pytest
 from tau_agent import (
     AgentMessage,
     AgentTool,
+    AgentToolResult,
     AssistantMessage,
+    JSONValue,
     QueueUpdateEvent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
 )
+from tau_agent.harness import AgentHarness, AgentHarnessConfig
 from tau_agent.session import (
     CompactionEntry,
     JsonlSessionStorage,
@@ -337,6 +340,173 @@ async def test_prompt_repairs_loaded_session_with_interrupted_tool_call(
         UserMessage(content="What happened?"),
         AssistantMessage(content="Recovered."),
     ]
+
+
+@pytest.mark.anyio
+async def test_prompt_repairs_loaded_session_with_user_message_after_tool_call(
+    tmp_path: Path,
+) -> None:
+    """A user message persisted after an unpaired tool call must not brick the session."""
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    user_entry = MessageEntry(message=UserMessage(content="Run the tool"))
+    await storage.append(user_entry)
+    tool_call = ToolCall(id="call-1", name="slow", arguments={})
+    assistant_entry = MessageEntry(
+        parent_id=user_entry.id,
+        message=AssistantMessage(content="Running.", tool_calls=[tool_call]),
+    )
+    await storage.append(assistant_entry)
+    follow_up_entry = MessageEntry(
+        parent_id=assistant_entry.id,
+        message=UserMessage(content="Are you still there?"),
+    )
+    await storage.append(follow_up_entry)
+    await storage.append(LeafEntry(parent_id=follow_up_entry.id, entry_id=follow_up_entry.id))
+
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="Recovered.")),
+            ]
+        ]
+    )
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=provider,
+            model="fake",
+            system="You are Tau.",
+            storage=storage,
+            cwd=tmp_path,
+        )
+    )
+
+    await _collect_session_events(session.prompt("What happened?"))
+
+    expected_repair = ToolResultMessage(
+        tool_call_id="call-1",
+        name="slow",
+        content="Tool call interrupted by user",
+        ok=False,
+        error="Tool call interrupted by user",
+    )
+    assert provider.calls[0][2] == [
+        UserMessage(content="Run the tool"),
+        AssistantMessage(content="Running.", tool_calls=[tool_call]),
+        expected_repair,
+        UserMessage(content="Are you still there?"),
+        UserMessage(content="What happened?"),
+    ]
+
+    entries = await storage.read_all()
+    message_entries = [entry for entry in entries if entry.type == "message"]
+    assert [entry.message for entry in message_entries] == [
+        UserMessage(content="Run the tool"),
+        AssistantMessage(content="Running.", tool_calls=[tool_call]),
+        UserMessage(content="Are you still there?"),
+        UserMessage(content="What happened?"),
+        AssistantMessage(content="Recovered."),
+    ]
+
+
+@pytest.mark.anyio
+async def test_cancelled_tool_run_persists_repairs_for_later_reload(tmp_path: Path) -> None:
+    """Hard-cancelling a run mid-tool-call must not corrupt the durable transcript."""
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    started = asyncio.Event()
+
+    async def executor(
+        arguments: Mapping[str, JSONValue],
+        signal: object | None = None,
+    ) -> AgentToolResult:
+        del arguments, signal
+        started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("tool should have been cancelled")
+
+    tool = AgentTool(
+        name="slow",
+        description="Block until cancelled.",
+        input_schema={"type": "object"},
+        executor=executor,
+    )
+    tool_call = ToolCall(id="call-1", name="slow", arguments={})
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(
+                    message=AssistantMessage(content="Running.", tool_calls=[tool_call])
+                ),
+            ],
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="Second answer")),
+            ],
+        ]
+    )
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=provider,
+            model="fake",
+            system="You are Tau.",
+            storage=storage,
+            cwd=tmp_path,
+            tools=[tool],
+        )
+    )
+
+    async def drive() -> None:
+        async for _event in session.prompt("Run the slow tool"):
+            pass
+
+    task = asyncio.create_task(drive())
+    await started.wait()
+    session.cancel()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    await _collect_session_events(session.prompt("Did it work?"))
+
+    interrupted_result = ToolResultMessage(
+        tool_call_id="call-1",
+        name="slow",
+        content="Tool call interrupted by user",
+        ok=False,
+        error="Tool call interrupted by user",
+    )
+    entries = await storage.read_all()
+    message_entries = [entry for entry in entries if entry.type == "message"]
+    assert [entry.message for entry in message_entries] == [
+        UserMessage(content="Run the slow tool"),
+        AssistantMessage(content="Running.", tool_calls=[tool_call]),
+        interrupted_result,
+        UserMessage(content="Did it work?"),
+        AssistantMessage(content="Second answer"),
+    ]
+
+    reload_provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="Still alive")),
+            ]
+        ]
+    )
+    reloaded = await CodingSession.load(
+        CodingSessionConfig(
+            provider=reload_provider,
+            model="fake",
+            system="You are Tau.",
+            storage=storage,
+            cwd=tmp_path,
+        )
+    )
+    await _collect_session_events(reloaded.prompt("And after a restart?"))
+    replayed = reload_provider.calls[0][2]
+    assistant_index = replayed.index(AssistantMessage(content="Running.", tool_calls=[tool_call]))
+    assert replayed[assistant_index + 1] == interrupted_result
 
 
 @pytest.mark.anyio
@@ -2629,7 +2799,9 @@ def test_minimal_commands_are_handled(tmp_path: Path) -> None:
     session = CodingSession(
         _config(tmp_path, FakeProvider([]), JsonlSessionStorage(tmp_path / "session.jsonl")),
         state=object(),  # type: ignore[arg-type]
-        harness=object(),  # type: ignore[arg-type]
+        harness=AgentHarness(
+            AgentHarnessConfig(provider=FakeProvider([]), model="fake", system="You are Tau.")
+        ),
         last_parent_id=None,
     )
 

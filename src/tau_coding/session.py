@@ -221,6 +221,7 @@ class CodingSession:
         self._config = config
         self._state = state
         self._harness = harness
+        self._persisted_message_count = len(harness.messages)
         self._last_parent_id = last_parent_id
         self._pending_initial_entries = pending_initial_entries
         self._skills = skills
@@ -455,6 +456,7 @@ class CodingSession:
 
         await self._refresh_persisted_state(leaf_id=target_id)
         self._harness.replace_messages(self._state.messages)
+        self._persisted_message_count = len(self._harness.messages)
         self._harness.config.model = self._state.model or self._config.model
         self._thinking_level = _state_thinking_level(self._state, self._config.thinking_level)
         self._sync_thinking_level_to_active_model()
@@ -953,6 +955,7 @@ class CodingSession:
         self._config = replacement._config
         self._state = replacement._state
         self._harness = replacement._harness
+        self._persisted_message_count = replacement._persisted_message_count
         self._last_parent_id = replacement._last_parent_id
         self._skills = replacement._skills
         self._prompt_templates = replacement._prompt_templates
@@ -1012,6 +1015,7 @@ class CodingSession:
         self._config = replacement._config
         self._state = replacement._state
         self._harness = replacement._harness
+        self._persisted_message_count = replacement._persisted_message_count
         self._last_parent_id = replacement._last_parent_id
         self._skills = replacement._skills
         self._prompt_templates = replacement._prompt_templates
@@ -1029,6 +1033,8 @@ class CodingSession:
 
     async def compact(self, instructions: str | None = None) -> str:
         """Generate a manual compaction summary and rebuild active context."""
+        self._repair_transcript()
+        await self._flush_transcript()
         plan = self._manual_compaction_plan()
         summary = await self._generate_compaction_summary(
             plan.messages_to_summarize,
@@ -1086,7 +1092,7 @@ class CodingSession:
             exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
 
         if add_to_context:
-            before_count = len(self._harness.messages)
+            self._repair_transcript()
             self._harness.append_message(
                 UserMessage(
                     content=_terminal_command_context_message(
@@ -1095,7 +1101,7 @@ class CodingSession:
                     )
                 )
             )
-            await self._persist_messages_since(before_count)
+            await self._flush_transcript()
 
         return TerminalCommandResult(
             command=normalized_command,
@@ -1136,42 +1142,45 @@ class CodingSession:
                 "CodingSession is already running; pass streaming_behavior to queue a message."
             )
 
+        self._repair_transcript()
+        await self._flush_transcript()
         await self._try_auto_compact(context=context, phase="auto_compact_before_prompt")
-        persisted_count = len(self._harness.messages)
         overflow_event: ErrorEvent | None = None
         try:
-            async for event in self._harness.prompt(expanded_content):
-                if isinstance(event, MessageEndEvent):
-                    persisted_count = await self._persist_messages_since(persisted_count)
-                if isinstance(event, ErrorEvent) and not event.recoverable:
-                    self._last_diagnostic_log_path = self._diagnostic_logger.log_error_event(
-                        context=context,
-                        phase="agent_loop",
-                        event=event,
-                    )
-                    if _is_context_overflow_error(event):
-                        overflow_event = event
-                yield event
-            persisted_count = await self._persist_messages_since(persisted_count)
+            try:
+                async for event in self._harness.prompt(expanded_content):
+                    if isinstance(event, MessageEndEvent):
+                        await self._flush_transcript()
+                    if isinstance(event, ErrorEvent) and not event.recoverable:
+                        self._last_diagnostic_log_path = self._diagnostic_logger.log_error_event(
+                            context=context,
+                            phase="agent_loop",
+                            event=event,
+                        )
+                        if _is_context_overflow_error(event):
+                            overflow_event = event
+                    yield event
+            finally:
+                await self._flush_transcript()
             if overflow_event is not None:
                 compacted = await self._try_overflow_compact(context=context)
                 if compacted:
-                    retry_persisted_count = len(self._harness.messages)
-                    async for retry_event in self._harness.continue_():
-                        if isinstance(retry_event, MessageEndEvent):
-                            retry_persisted_count = await self._persist_messages_since(
-                                retry_persisted_count
-                            )
-                        if isinstance(retry_event, ErrorEvent) and not retry_event.recoverable:
-                            self._last_diagnostic_log_path = (
-                                self._diagnostic_logger.log_error_event(
-                                    context=context,
-                                    phase="agent_loop_retry",
-                                    event=retry_event,
+                    self._repair_transcript()
+                    try:
+                        async for retry_event in self._harness.continue_():
+                            if isinstance(retry_event, MessageEndEvent):
+                                await self._flush_transcript()
+                            if isinstance(retry_event, ErrorEvent) and not retry_event.recoverable:
+                                self._last_diagnostic_log_path = (
+                                    self._diagnostic_logger.log_error_event(
+                                        context=context,
+                                        phase="agent_loop_retry",
+                                        event=retry_event,
+                                    )
                                 )
-                            )
-                        yield retry_event
-                    await self._persist_messages_since(retry_persisted_count)
+                            yield retry_event
+                    finally:
+                        await self._flush_transcript()
                 return
             await self._try_auto_compact(context=context, phase="auto_compact_after_prompt")
         except Exception as exc:
@@ -1185,19 +1194,22 @@ class CodingSession:
     async def continue_(self) -> AsyncIterator[AgentEvent]:
         """Continue the agent from restored state and persist new messages."""
         context = self._diagnostic_context()
-        persisted_count = len(self._harness.messages)
+        self._repair_transcript()
+        await self._flush_transcript()
         try:
-            async for event in self._harness.continue_():
-                if isinstance(event, MessageEndEvent):
-                    persisted_count = await self._persist_messages_since(persisted_count)
-                if isinstance(event, ErrorEvent) and not event.recoverable:
-                    self._last_diagnostic_log_path = self._diagnostic_logger.log_error_event(
-                        context=context,
-                        phase="agent_loop",
-                        event=event,
-                    )
-                yield event
-            await self._persist_messages_since(persisted_count)
+            try:
+                async for event in self._harness.continue_():
+                    if isinstance(event, MessageEndEvent):
+                        await self._flush_transcript()
+                    if isinstance(event, ErrorEvent) and not event.recoverable:
+                        self._last_diagnostic_log_path = self._diagnostic_logger.log_error_event(
+                            context=context,
+                            phase="agent_loop",
+                            event=event,
+                        )
+                    yield event
+            finally:
+                await self._flush_transcript()
             await self._try_auto_compact(context=context, phase="auto_compact_after_continue")
         except Exception as exc:
             self._last_diagnostic_log_path = self._diagnostic_logger.log_exception(
@@ -1216,26 +1228,41 @@ class CodingSession:
             run_id=new_agent_call_run_id(),
         )
 
-    async def _persist_messages_since(self, persisted_count: int) -> int:
-        """Persist completed harness messages after ``persisted_count``.
+    def _repair_transcript(self) -> None:
+        """Repair unpaired tool calls while keeping the persisted baseline aligned.
+
+        Repairs inserted below the persisted boundary shift already-persisted
+        messages up by one; count them as persisted because the append-only
+        session tree cannot accept mid-history inserts — they are re-created
+        in memory on every load instead. Repairs at or beyond the boundary
+        flush to storage like any other new message.
+        """
+        for index in self._harness.repair_interrupted_tool_calls():
+            if index < self._persisted_message_count:
+                self._persisted_message_count += 1
+
+    async def _flush_transcript(self) -> None:
+        """Persist harness messages that have not reached durable storage yet.
 
         Message lifecycle events are the durable-message boundary. Each persisted
         message advances the append-only tree and records a leaf pointer so tree
         navigation can observe the current branch while a run is still active.
+        The persisted counter advances per message so an interrupted flush never
+        re-persists messages that already reached storage.
         """
-        new_messages = self._harness.messages[persisted_count:]
-        if not new_messages:
-            return persisted_count
+        if self._persisted_message_count >= len(self._harness.messages):
+            return
 
-        for message in new_messages:
+        while self._persisted_message_count < len(self._harness.messages):
+            message = self._harness.messages[self._persisted_message_count]
             entry = MessageEntry(parent_id=self._last_parent_id, message=message)
             await self._append_session_entry(entry)
             self._last_parent_id = entry.id
             leaf = LeafEntry(parent_id=entry.id, entry_id=entry.id)
             await self._append_session_entry(leaf)
+            self._persisted_message_count += 1
 
         await self._refresh_persisted_state()
-        return persisted_count + len(new_messages)
 
     async def _refresh_persisted_state(
         self,
@@ -1456,6 +1483,7 @@ class CodingSession:
 
         await self._refresh_persisted_state(leaf_id=compaction.id)
         self._harness.replace_messages(self._state.messages)
+        self._persisted_message_count = len(self._harness.messages)
         return compaction
 
 

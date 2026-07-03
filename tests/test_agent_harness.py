@@ -273,6 +273,35 @@ async def test_cancelled_tool_run_repairs_transcript_before_next_prompt() -> Non
     ]
 
 
+def test_repair_inserts_interrupted_results_before_later_user_messages() -> None:
+    tool_call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
+    harness = AgentHarness(
+        AgentHarnessConfig(provider=FakeProvider([]), model="fake", system="You are Tau."),
+        messages=[
+            UserMessage(content="Read README.md"),
+            AssistantMessage(content="I'll read it.", tool_calls=[tool_call]),
+            UserMessage(content="Are you still there?"),
+        ],
+    )
+
+    insertions = harness.repair_interrupted_tool_calls()
+
+    assert insertions == (2,)
+    assert harness.messages == (
+        UserMessage(content="Read README.md"),
+        AssistantMessage(content="I'll read it.", tool_calls=[tool_call]),
+        ToolResultMessage(
+            tool_call_id="call-1",
+            name="read",
+            content="Tool call interrupted by user",
+            ok=False,
+            error="Tool call interrupted by user",
+        ),
+        UserMessage(content="Are you still there?"),
+    )
+    assert harness.repair_interrupted_tool_calls() == ()
+
+
 @pytest.mark.anyio
 async def test_harness_rejects_overlapping_prompt_runs() -> None:
     provider = FakeProvider(
