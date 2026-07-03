@@ -26,6 +26,11 @@ class OpenAICompatibleConfig:
     reasoning_effort: str | None = None
     reasoning_effort_parameter: str = "reasoning_effort"
     provider_name: str = "OpenAI-compatible provider"
+    # Whether the endpoint supports `stream_options: {"include_usage": true}`
+    # for token usage in streaming responses. Mirrors Pi's
+    # supportsUsageInStreaming compat flag (default true). Set False for
+    # strict endpoints that reject the parameter.
+    supports_usage_in_streaming: bool = True
 
 
 @dataclass(frozen=True, slots=True)
