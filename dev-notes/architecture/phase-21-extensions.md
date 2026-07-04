@@ -272,6 +272,61 @@ and may return `None` or a `str` message, which flows through the normal
 autocomplete automatically because autocomplete reads
 `CommandRegistry.list_commands()`.
 
+### UI dialogs
+
+`context.ui` (Pi's `ctx.ui`) exposes host-provided interactive dialogs plus
+`notify`:
+
+```python
+async def select(title: str, options: Sequence[str], *, timeout: float | None = None) -> str | None
+async def confirm(title: str, message: str, *, timeout: float | None = None) -> bool
+async def input(title: str, placeholder: str = "", *, timeout: float | None = None) -> str | None
+def notify(message: str, level: Literal["info", "warning", "error"] = "info") -> None
+```
+
+The methods delegate to a host `UiBridge` (`api.py`): `NullUiBridge`
+(headless/tests) and `StderrUiBridge` (print mode) return Pi's no-op defaults
+(`None`/`False`/`None`); `_TuiExtensionUiBridge` (`tui/app.py`) drives three
+`ModalScreen`s (`ExtensionSelectScreen`/`ExtensionConfirmScreen`/
+`ExtensionInputScreen`). `api.notify` stays as a back-compat alias for
+`context.ui.notify`.
+
+**Ruling:** extension UI dialogs are host-provided (`select`/`confirm`/
+`input`), not extension-authored widgets, so they are in-spirit despite the
+"custom TUI components" non-goal. Deviations from Pi, all deliberate for v1:
+(a) **no `AbortSignal`** — only `timeout` (in **seconds**, not Pi's
+milliseconds); on timeout the dialog auto-dismisses and returns the no-op
+default (no live countdown display — Pi shows one). (b) `input` returns the
+entered text verbatim (empty string on empty submit), `None` only on
+cancel/escape, matching Pi's `string | undefined`. (c) The TUI bridge awaits
+each modal via `push_screen(screen, callback)` + an `asyncio.Future`, **not**
+`push_screen_wait` — the latter requires a Textual *worker* context, which a
+task spawned by a sync command handler is not; the future/callback pattern
+(already used by the OAuth `_manual_code_input` flow) works from any coroutine
+on the app's event loop.
+
+**Ruling:** the sync-only command-handler Ruling (above) is **kept** for v1
+even though dialogs are async. An extension `/command` that needs a dialog
+does **not** await it directly (the handler is sync); instead it spawns a loop
+task and returns immediately:
+
+```python
+def _handler(args, context):
+    async def _menu():
+        choice = await context.api.context.ui.select("Action", ["deploy", "cancel"])
+        if choice is not None:
+            context.api.send_user_message(f"run {choice}")
+    asyncio.get_running_loop().create_task(_menu())
+    return "opening menu..."
+```
+
+This is safe because `CodingSession.handle_command` is invoked from the TUI's
+async submit path (`tui/app.py`), i.e. on the Textual event-loop thread, so
+`asyncio.get_running_loop()` is available and the spawned task shares that
+loop. Converting the command path to async (the faithful Pi port) is the clean
+long-term option but is deferred — it ripples through `CommandRegistry.execute`
+→ `handle_command` → the TUI submit handler.
+
 ## Hook wiring (how interception works without touching tau_agent)
 
 - **Observation** — the runtime subscribes one listener via
