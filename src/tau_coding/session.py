@@ -639,13 +639,29 @@ class CodingSession:
         """Return the extension runtime bound to this session."""
         return self._extension_runtime
 
-    def queue_steering_message(self, content: str) -> None:
+    def queue_steering_message(
+        self,
+        content: str,
+        *,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Queue a steering user message (extension runtime seam)."""
-        self._harness.steer(content)
+        self._harness.steer_message(
+            UserMessage(content=content, custom_type=custom_type, details=details)
+        )
 
-    def queue_follow_up_message(self, content: str) -> None:
+    def queue_follow_up_message(
+        self,
+        content: str,
+        *,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Queue a follow-up user message (extension runtime seam)."""
-        self._harness.follow_up(content)
+        self._harness.follow_up_message(
+            UserMessage(content=content, custom_type=custom_type, details=details)
+        )
 
     async def append_custom_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
         """Persist an extension-owned custom entry on the active branch path.
@@ -1293,8 +1309,15 @@ class CodingSession:
         content: str,
         *,
         streaming_behavior: StreamingBehavior | None = None,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Append a user prompt, run the agent, and persist new messages."""
+        """Append a user prompt, run the agent, and persist new messages.
+
+        ``custom_type``/``details`` attach custom-message render metadata to the
+        appended ``UserMessage`` (used when an extension delivers a custom
+        message that starts an idle session's turn).
+        """
         context = self._diagnostic_context()
         input_outcome = await self._extension_runtime.run_input_hooks(content)
         if input_outcome.handled:
@@ -1329,7 +1352,9 @@ class CodingSession:
         persisted_count = len(self._harness.messages)
         overflow_event: ErrorEvent | None = None
         try:
-            async for event in self._harness.prompt(expanded_content):
+            async for event in self._harness.prompt(
+                expanded_content, custom_type=custom_type, details=details
+            ):
                 if isinstance(event, MessageEndEvent):
                     persisted_count = await self._persist_messages_since(persisted_count)
                 if isinstance(event, ErrorEvent) and not event.recoverable:
