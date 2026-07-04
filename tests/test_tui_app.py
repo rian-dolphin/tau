@@ -166,6 +166,10 @@ class FakeSession:
         self.terminal_commands: list[tuple[str, bool]] = []
         self.cancel_count = 0
         self.export_calls: list[tuple[Path | None, str | None]] = []
+        self.session_start_emissions = 0
+
+    async def emit_pending_session_start(self) -> None:
+        self.session_start_emissions += 1
 
     def handle_command(self, text: str) -> CommandResult:
         if text == "/session":
