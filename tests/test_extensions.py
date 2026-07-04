@@ -285,6 +285,81 @@ def test_manifest_discovered_in_extensions_dir(tmp_path: Path) -> None:
     assert diagnostics == ()
 
 
+def test_manifest_multiple_entries_load_independently(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    repo = tmp_path / "repo"
+    _write_src_layout_extension(repo)
+    other = repo / "src" / "other_ext"
+    other.mkdir()
+    (other / "extension.py").write_text("def setup(tau):\n    pass\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text(
+        '[tool.tau]\nextensions = ["src/my_ext/extension.py", "src/other_ext/extension.py"]\n',
+        encoding="utf-8",
+    )
+
+    result = load_extensions(paths, extra_paths=(repo,), include_resource_dirs=False)
+
+    assert [ext.name for ext in result.extensions] == ["my_ext", "other_ext"]
+    assert result.diagnostics == ()
+
+
+def test_manifest_duplicate_entry_names_first_wins(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    repo = tmp_path / "repo"
+    for parent in ("src", "legacy"):
+        package_dir = repo / parent / "my_ext"
+        package_dir.mkdir(parents=True)
+        (package_dir / "extension.py").write_text(
+            "def setup(tau):\n    pass\n", encoding="utf-8"
+        )
+    (repo / "pyproject.toml").write_text(
+        '[tool.tau]\nextensions = ["src/my_ext/extension.py", "legacy/my_ext/extension.py"]\n',
+        encoding="utf-8",
+    )
+
+    discovered, diagnostics = discover_extensions(
+        paths, extra_paths=(repo,), include_resource_dirs=False
+    )
+
+    assert [entry.name for entry in discovered] == ["my_ext"]
+    assert discovered[0].path == repo / "src" / "my_ext" / "extension.py"
+    assert any("duplicate extension name" in diag.message for diag in diagnostics)
+
+
+def test_manifest_empty_list_falls_back_to_extension_py(tmp_path: Path) -> None:
+    paths = _paths(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "extension.py").write_text("def setup(tau):\n    pass\n", encoding="utf-8")
+    (repo / "pyproject.toml").write_text("[tool.tau]\nextensions = []\n", encoding="utf-8")
+
+    discovered, diagnostics = discover_extensions(
+        paths, extra_paths=(repo,), include_resource_dirs=False
+    )
+
+    assert [entry.name for entry in discovered] == ["repo"]
+    assert diagnostics == ()
+
+
+def test_explicit_file_path_to_package_entry_cannot_reach_siblings(tmp_path: Path) -> None:
+    """`-x` on an entry *file* loads it standalone: relative imports fail.
+
+    Package extensions must be loaded through their directory (or a manifest);
+    this pins the failure mode the docs warn about.
+    """
+    paths = _paths(tmp_path)
+    repo = tmp_path / "repo"
+    entry = _write_src_layout_extension(repo)
+
+    result = load_extensions(paths, extra_paths=(entry,), include_resource_dirs=False)
+
+    assert result.extensions == ()
+    assert any(
+        diag.severity == "error" and "failed to import extension" in diag.message
+        for diag in result.diagnostics
+    )
+
+
 def test_manifest_missing_entry_is_error_with_extension_py_fallback(tmp_path: Path) -> None:
     paths = _paths(tmp_path)
     repo = tmp_path / "repo"
