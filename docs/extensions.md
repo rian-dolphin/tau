@@ -68,6 +68,11 @@ directory, so sibling modules stay importable with relative imports. The
 extension is named after the entry's parent directory (or after the file
 itself when it isn't named `extension.py`).
 
+One caveat: `tau -x` on an entry **file** loads it standalone — no
+package, so relative imports fail. Once an extension has sibling
+modules, always pass a directory: the package directory itself, or the
+repo root when a manifest declares the entry.
+
 Extensions load project-first; on name conflicts (extension names, tool
 names, command names) the first registration wins. `--no-extensions`
 disables directory discovery entirely (explicit `-x` paths still load).
@@ -267,6 +272,56 @@ tau.send_custom_message(
 - Custom rendering works in the interactive TUI and the `-p` print transcript,
   and survives `/resume` (the `custom_type`/`details` are persisted with the
   message).
+
+## Growing and maintaining an extension
+
+Extensions have three natural sizes; each step is optional and none
+requires packaging:
+
+1. **A single file** (`greet.py`) — the quick start above. No config.
+2. **A folder with `extension.py`** — split helpers into sibling modules
+   and import them relatively (`from . import helper`). No config.
+3. **A repo with a `src/` layout** — declare the entry in
+   `pyproject.toml` under `[tool.tau]` (see above). Tau reads only the
+   `[tool.tau]` table; whether the repo is also an installable Python
+   package is entirely your business (it helps IDEs resolve imports and
+   lets tests import modules directly, but Tau never installs or
+   `pip`-imports your extension).
+
+Two rules keep all three shapes loadable:
+
+- **Use relative imports between your own modules.** The loader imports
+  your extension under a synthetic package name (and never touches
+  `sys.path`), so `import helper` won't resolve — `from . import helper`
+  will, in every load mode.
+- **Feature-detect optional Tau APIs** (`getattr`/`try: import`) if you
+  want the extension to load on older Tau versions rather than fail at
+  import time.
+
+**Testing an extension.** Load it through the real runtime rather than
+importing your modules directly — that exercises discovery, the synthetic
+package import, and `setup` registration exactly as a session does:
+
+```python
+from tau_coding import TauResourcePaths
+from tau_coding.extensions import ExtensionRuntime
+
+def test_loads(tmp_path):
+    paths = TauResourcePaths(
+        root=tmp_path / "tau", cwd=tmp_path / "project",
+        agents_root=tmp_path / "agents",
+    )
+    runtime = ExtensionRuntime()
+    runtime.load(paths, extra_paths=(EXTENSION_DIR,), include_resource_dirs=False)
+    assert runtime.extension_names == ("my_ext",)
+```
+
+`extra_paths` takes your extension directory (or repo root with a
+manifest); `include_resource_dirs=False` keeps the test hermetic —
+nothing from `~/.tau/extensions` leaks in. To monkeypatch module globals
+in tests, patch the loaded synthetic module (find it in `sys.modules` by
+the `tau_extension_` prefix), not your package's import identity — the
+runtime only sees the former.
 
 ## Example extensions
 

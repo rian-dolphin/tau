@@ -88,7 +88,9 @@ layouts), named after that parent (or the file stem when the entry is not
 explicit claim, and Tau already surfaces discovery diagnostics. A manifest
 that yields no usable entries falls back to the `extension.py` convention;
 an unparseable `pyproject.toml` is a `warning` (scanned directories may
-contain unrelated projects).
+contain unrelated projects). Declared paths are not confined to the manifest
+directory (Pi parity: `path.resolve(dir, extPath)`) — extensions execute
+arbitrary code anyway, so path containment would be security theater.
 
 Each module is imported with `importlib` under a unique synthetic module name
 (`tau_extension_<slug>_<n>`), so project and user extensions with the same
