@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
@@ -150,7 +150,13 @@ class ExtensionRuntimeDiagnostic:
 
 
 class UiBridge(Protocol):
-    """Host-provided UI capabilities available to extensions."""
+    """Host-provided UI capabilities available to extensions.
+
+    Dialog methods (`select`/`confirm`/`input`) are async and mirror Pi's
+    `ctx.ui`. Without an interactive frontend they return the Pi no-op
+    defaults (`None`/`False`/`None`). `timeout` (seconds) auto-dismisses a
+    dialog with the no-op default; `None` waits indefinitely.
+    """
 
     @property
     def has_ui(self) -> bool:
@@ -159,6 +165,36 @@ class UiBridge(Protocol):
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Show a notification to the user (no-op without a UI)."""
+        ...
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a picker; return the chosen option, or None on cancel."""
+        ...
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Show a confirmation; return True only if confirmed."""
+        ...
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a text prompt; return the entered text, or None on cancel."""
         ...
 
 
@@ -173,14 +209,43 @@ class NullUiBridge:
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Ignore notifications without a UI."""
 
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Return None: no UI to pick from (Pi no-op default)."""
+        return None
 
-class StderrUiBridge:
-    """UI bridge that writes extension notifications to stderr (print mode)."""
-
-    @property
-    def has_ui(self) -> bool:
-        """Return False: print mode has no interactive UI."""
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Return False: no UI to confirm with (Pi no-op default)."""
         return False
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Return None: no UI to enter text into (Pi no-op default)."""
+        return None
+
+
+class StderrUiBridge(NullUiBridge):
+    """UI bridge that writes extension notifications to stderr (print mode).
+
+    Inherits the Pi no-op dialog defaults from `NullUiBridge`; only
+    `notify` is observable in print mode.
+    """
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Print the notification to stderr."""
@@ -196,11 +261,63 @@ class ExtensionCommandContext:
     api: ExtensionAPI
 
 
+class ExtensionUi:
+    """Interactive UI facade exposed to extensions as `context.ui`.
+
+    Mirrors Pi's `ctx.ui`: async `select`/`confirm`/`input` dialogs plus a
+    synchronous `notify`. Every call delegates to the host UI bridge, which
+    returns the Pi no-op defaults when no interactive frontend is attached.
+    """
+
+    def __init__(self, runtime: ExtensionRuntime) -> None:
+        self._runtime = runtime
+
+    @property
+    def has_ui(self) -> bool:
+        """Return whether an interactive UI is attached."""
+        return self._runtime.ui.has_ui
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Prompt the user to pick an option; None on cancel/no UI."""
+        return await self._runtime.ui.select(title, options, timeout=timeout)
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Ask the user to confirm; True only if confirmed."""
+        return await self._runtime.ui.confirm(title, message, timeout=timeout)
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Prompt the user for text; None on cancel/no UI."""
+        return await self._runtime.ui.input(title, placeholder, timeout=timeout)
+
+    def notify(self, message: str, level: NotifyLevel = "info") -> None:
+        """Show a notification in the UI, if one is attached."""
+        self._runtime.ui.notify(message, level)
+
+
 class ExtensionContext:
     """Read-only session context exposed to extensions."""
 
     def __init__(self, runtime: ExtensionRuntime) -> None:
         self._runtime = runtime
+        self._ui = ExtensionUi(runtime)
 
     @property
     def cwd(self) -> Path:
@@ -250,6 +367,16 @@ class ExtensionContext:
     def has_ui(self) -> bool:
         """Return whether an interactive UI is attached."""
         return self._runtime.ui.has_ui
+
+    @property
+    def ui(self) -> ExtensionUi:
+        """Return the interactive UI facade (Pi's `ctx.ui`).
+
+        Use `await context.ui.select/confirm/input(...)` to drive dialogs.
+        Because command handlers are sync (see the docs), a `/command` that
+        needs a dialog should spawn a loop task that awaits `context.ui`.
+        """
+        return self._ui
 
 
 class ExtensionAPI:

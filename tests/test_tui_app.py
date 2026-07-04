@@ -53,6 +53,9 @@ from tau_coding.tools import create_coding_tools
 from tau_coding.tui import app as tui_app
 from tau_coding.tui.app import (
     CommandOutputScreen,
+    ExtensionConfirmScreen,
+    ExtensionInputScreen,
+    ExtensionSelectScreen,
     LoginMethodPickerScreen,
     LoginProviderPickerScreen,
     LoginScreen,
@@ -63,6 +66,7 @@ from tau_coding.tui.app import (
     TauTuiApp,
     ThemePickerScreen,
     TreePickerScreen,
+    _TuiExtensionUiBridge,
     _activity_prompt_border_color,
     _completion_selected_render_line,
     _completion_visible_line_limit,
@@ -1923,6 +1927,118 @@ async def test_tui_app_theme_command_opens_picker_and_persists_selection(
         assert app.tui_settings.theme == "tau-light"
         assert tui_settings_path().read_text(encoding="utf-8").find('"theme": "tau-light"') != -1
         assert app.get_theme_variable_defaults()["tau-screen-background"] == "#ffffff"
+
+
+@pytest.mark.anyio
+async def test_extension_select_dialog_returns_choice() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.select("Pick", ["alpha", "beta"]))
+        await pilot.pause()
+
+        screen = app.screen
+        assert isinstance(screen, ExtensionSelectScreen)
+        # Move the highlight to the second option, then confirm with Enter.
+        screen.action_cursor_down()
+        await pilot.pause()
+        await pilot.press("enter")
+        result = await task
+
+    assert result == "beta"
+
+
+@pytest.mark.anyio
+async def test_extension_select_dialog_escape_returns_none() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.select("Pick", ["alpha", "beta"]))
+        await pilot.pause()
+        await pilot.press("escape")
+        result = await task
+
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_extension_confirm_dialog_yes_and_cancel() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+
+        yes_task = asyncio.ensure_future(bridge.confirm("Ship?", "to prod"))
+        await pilot.pause()
+        assert isinstance(app.screen, ExtensionConfirmScreen)
+        await pilot.press("enter")  # "Yes" is highlighted first
+        assert await yes_task is True
+
+        no_task = asyncio.ensure_future(bridge.confirm("Ship?", "to prod"))
+        await pilot.pause()
+        no_screen = app.screen
+        assert isinstance(no_screen, ExtensionConfirmScreen)
+        no_screen.action_cursor_down()  # move highlight to "No"
+        await pilot.pause()
+        await pilot.press("enter")
+        assert await no_task is False
+
+        cancel_task = asyncio.ensure_future(bridge.confirm("Ship?", "to prod"))
+        await pilot.pause()
+        await pilot.press("escape")
+        assert await cancel_task is False
+
+
+@pytest.mark.anyio
+async def test_extension_input_dialog_returns_text() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.input("Name", "hint"))
+        await pilot.pause()
+
+        assert isinstance(app.screen, ExtensionInputScreen)
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        result = await task
+
+    assert result == "hi"
+
+
+@pytest.mark.anyio
+async def test_extension_input_dialog_escape_returns_none() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.input("Name", "hint"))
+        await pilot.pause()
+        await pilot.press("escape")
+        result = await task
+
+    assert result is None
+
+
+@pytest.mark.anyio
+async def test_extension_select_dialog_timeout_returns_default() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        # A tiny timeout elapses with no interaction; the dialog auto-dismisses.
+        result = await bridge.select("Pick", ["alpha", "beta"], timeout=0.05)
+        await pilot.pause()
+
+    assert result is None
 
 
 @pytest.mark.anyio

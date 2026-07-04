@@ -792,6 +792,181 @@ def test_transcript_returns_copies_so_mutation_cannot_corrupt_session(tmp_path: 
     assert session.messages[0].content == "original"
 
 
+# -- UI dialogs ---------------------------------------------------------------
+
+
+class RecordingUiBridge:
+    """Test UI bridge that records dialog calls and returns canned answers.
+
+    Satisfies the ``UiBridge`` protocol without a real frontend, so tests can
+    exercise ``context.ui`` round-trips and cancel semantics deterministically.
+    """
+
+    def __init__(
+        self,
+        *,
+        select_result: str | None = None,
+        confirm_result: bool = False,
+        input_result: str | None = None,
+        has_ui: bool = True,
+    ) -> None:
+        self._select_result = select_result
+        self._confirm_result = confirm_result
+        self._input_result = input_result
+        self._has_ui = has_ui
+        self.calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+        self.notifications: list[tuple[str, str]] = []
+
+    @property
+    def has_ui(self) -> bool:
+        return self._has_ui
+
+    def notify(self, message: str, level: str = "info") -> None:
+        self.notifications.append((message, level))
+
+    async def select(
+        self,
+        title: str,
+        options: object,
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        self.calls.append(("select", (title, tuple(options)), {"timeout": timeout}))  # type: ignore[arg-type]
+        return self._select_result
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        self.calls.append(("confirm", (title, message), {"timeout": timeout}))
+        return self._confirm_result
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        self.calls.append(("input", (title, placeholder), {"timeout": timeout}))
+        return self._input_result
+
+
+async def test_context_ui_round_trips_dialogs(tmp_path: Path) -> None:
+    from typing import cast
+
+    from tau_coding.extensions.api import ExtensionAPI
+
+    ui = RecordingUiBridge(select_result="b", confirm_result=True, input_result="typed")
+    runtime = ExtensionRuntime(ui=ui)
+    api = cast(ExtensionAPI, _register_inline_extension(runtime, "dialogs"))
+
+    context = api.context
+    assert context.ui.has_ui is True
+    assert await context.ui.select("Pick", ["a", "b"], timeout=1.5) == "b"
+    assert await context.ui.confirm("Sure?", "really") is True
+    assert await context.ui.input("Name", "hint") == "typed"
+    context.ui.notify("done", "warning")
+
+    assert ui.calls == [
+        ("select", ("Pick", ("a", "b")), {"timeout": 1.5}),
+        ("confirm", ("Sure?", "really"), {"timeout": None}),
+        ("input", ("Name", "hint"), {"timeout": None}),
+    ]
+    assert ui.notifications == [("done", "warning")]
+
+
+async def test_context_ui_cancel_returns_pi_defaults(tmp_path: Path) -> None:
+    from typing import cast
+
+    from tau_coding.extensions.api import ExtensionAPI
+
+    ui = RecordingUiBridge()  # select None, confirm False, input None
+    runtime = ExtensionRuntime(ui=ui)
+    api = cast(ExtensionAPI, _register_inline_extension(runtime, "cancel"))
+
+    assert await api.context.ui.select("t", ["x"]) is None
+    assert await api.context.ui.confirm("t", "m") is False
+    assert await api.context.ui.input("t") is None
+
+
+async def test_headless_ui_bridges_return_pi_defaults(tmp_path: Path) -> None:
+    from tau_coding.extensions import NullUiBridge, StderrUiBridge
+
+    for bridge in (NullUiBridge(), StderrUiBridge()):
+        assert bridge.has_ui is False
+        assert await bridge.select("t", ["x"]) is None
+        assert await bridge.confirm("t", "m") is False
+        assert await bridge.input("t") is None
+
+
+async def test_default_runtime_ui_is_headless(tmp_path: Path) -> None:
+    from typing import cast
+
+    from tau_coding.extensions.api import ExtensionAPI
+
+    runtime = ExtensionRuntime()  # defaults to NullUiBridge
+    api = cast(ExtensionAPI, _register_inline_extension(runtime, "headless"))
+
+    assert api.context.ui.has_ui is False
+    assert await api.context.ui.select("t", ["a"]) is None
+    assert await api.context.ui.confirm("t", "m") is False
+    assert await api.context.ui.input("t") is None
+
+
+async def test_sync_command_spawns_task_that_awaits_dialog(tmp_path: Path) -> None:
+    """A sync /command drives an async dialog by spawning a loop task.
+
+    Mirrors the adopted v1 pattern: command handlers stay sync, so a handler
+    that needs a dialog schedules a coroutine on the running loop (available
+    because handle_command runs on the event-loop thread) and returns at once.
+    """
+    import asyncio
+
+    ui = RecordingUiBridge(select_result="deploy")
+    paths = _paths(tmp_path)
+    _write_extension(
+        _user_extensions_dir(paths),
+        "menu_cmd",
+        (
+            "import asyncio\n\n\n"
+            "def _handler(args, context):\n"
+            "    async def _menu():\n"
+            "        ui = context.api.context.ui\n"
+            "        choice = await ui.select('Action', ['deploy', 'cancel'])\n"
+            "        if choice is not None:\n"
+            "            context.api.send_user_message(f'run {choice}')\n"
+            "    asyncio.get_running_loop().create_task(_menu())\n"
+            "    return 'opening menu...'\n\n\n"
+            "def setup(tau):\n"
+            "    tau.register_command('menu', _handler)\n"
+        ),
+    )
+
+    runtime = ExtensionRuntime(ui=ui)
+    runtime.load(paths)
+    session = RecordingSession(tmp_path, running=True)
+    runtime.bind(session)  # type: ignore[arg-type]
+    registry = runtime.build_command_registry()
+
+    command = registry.get("menu")
+    assert command is not None
+
+    result = command.handler(_command_context(registry, "/menu", "menu", ""))  # type: ignore[arg-type]
+    assert result.handled is True
+    assert result.message == "opening menu..."
+
+    # Let the spawned dialog task run to completion.
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    assert ui.calls == [("select", ("Action", ("deploy", "cancel")), {"timeout": None})]
+    assert session.followed_up == ["run deploy"]
+
+
 def _register_inline_extension(runtime: ExtensionRuntime, name: str) -> object:
     from tau_coding.extensions.loader import LoadedExtension
 

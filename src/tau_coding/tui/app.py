@@ -8,7 +8,7 @@ from datetime import datetime
 from inspect import isawaitable
 from io import StringIO
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Protocol, cast
+from typing import Any, ClassVar, Literal, Protocol, TypeVar, cast
 
 from rich.console import Console, Group
 from rich.text import Text
@@ -147,6 +147,9 @@ class LoginRequiredProvider:
         return iterator()
 
 
+_DialogResult = TypeVar("_DialogResult")
+
+
 class _TuiExtensionUiBridge:
     """Route extension UI requests to the running Textual app."""
 
@@ -167,6 +170,80 @@ class _TuiExtensionUiBridge:
     def notify(self, message: str, level: str = "info") -> None:
         """Show an extension notification through the app's dedupe path."""
         self._app._notify(message, severity=self._SEVERITIES.get(level, "information"))
+
+    async def select(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a modal picker; return the choice, or None on cancel/timeout."""
+        theme = self._app.tui_settings.resolved_theme
+        screen: ModalScreen[str | None] = ExtensionSelectScreen(
+            title, options, theme=theme
+        )
+        return await self._run_dialog(screen, default=None, timeout=timeout)
+
+    async def confirm(
+        self,
+        title: str,
+        message: str,
+        *,
+        timeout: float | None = None,
+    ) -> bool:
+        """Show a modal confirmation; True only if confirmed."""
+        theme = self._app.tui_settings.resolved_theme
+        screen: ModalScreen[bool] = ExtensionConfirmScreen(title, message, theme=theme)
+        return await self._run_dialog(screen, default=False, timeout=timeout)
+
+    async def input(
+        self,
+        title: str,
+        placeholder: str = "",
+        *,
+        timeout: float | None = None,
+    ) -> str | None:
+        """Show a modal text prompt; return the text, or None on cancel/timeout."""
+        theme = self._app.tui_settings.resolved_theme
+        screen: ModalScreen[str | None] = ExtensionInputScreen(
+            title, placeholder, theme=theme
+        )
+        return await self._run_dialog(screen, default=None, timeout=timeout)
+
+    async def _run_dialog(
+        self,
+        screen: ModalScreen[_DialogResult],
+        *,
+        default: _DialogResult,
+        timeout: float | None,
+    ) -> _DialogResult:
+        """Push a modal and await its dismissal via a callback-resolved future.
+
+        Uses ``push_screen(screen, callback)`` + an ``asyncio.Future`` rather
+        than ``push_screen_wait`` (which requires a Textual worker context);
+        this pattern works from any coroutine on the app's event loop,
+        including a task spawned by a sync ``/command`` handler. On ``timeout``
+        (seconds) the dialog auto-dismisses and the no-op ``default`` returns.
+        """
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[_DialogResult] = loop.create_future()
+
+        def _resolve(result: _DialogResult | None) -> None:
+            # Textual passes None when a screen is dismissed with no value;
+            # map that (and any explicit cancel) to the no-op default.
+            if not future.done():
+                future.set_result(default if result is None else result)
+
+        self._app.push_screen(screen, _resolve)
+        if timeout is None:
+            return await future
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except TimeoutError:
+            with suppress(Exception):
+                screen.dismiss(default)
+            return default
 
 
 class CompletionActionTarget(Protocol):
@@ -425,6 +502,178 @@ class PromptInput(TextArea):
 
     def _completion_target(self) -> CompletionActionTarget:
         return cast(CompletionActionTarget, self.app)
+
+
+class ExtensionSelectScreen(ModalScreen[str | None]):
+    """Modal option picker backing `context.ui.select`."""
+
+    BINDINGS: ClassVar[list[BindingEntry]] = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("up", "cursor_up", "Up", show=False, priority=True),
+        Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("enter", "select_cursor", "Select", show=False, priority=True),
+    ]
+
+    def __init__(
+        self,
+        title: str,
+        options: Sequence[str],
+        *,
+        theme: TuiTheme,
+    ) -> None:
+        super().__init__()
+        self.title_text = title
+        self.options = tuple(options)
+        self.theme = theme
+
+    def compose(self) -> ComposeResult:
+        """Compose the option picker."""
+        with Vertical(id="extension-select"):
+            yield Static(self.title_text, id="extension-select-title", markup=False)
+            yield ListView(
+                *[ListItem(Label(option, markup=False)) for option in self.options],
+                id="extension-select-list",
+            )
+            yield Static("Enter selects - Escape cancels", id="extension-select-help")
+
+    def on_mount(self) -> None:
+        """Focus the option list for keyboard navigation."""
+        option_list = self.query_one("#extension-select-list", ListView)
+        option_list.index = 0
+        option_list.focus()
+
+    def on_key(self, event: Key) -> None:
+        """Route arrow and enter keys to the option list."""
+        if event.key == "up":
+            event.stop()
+            self.action_cursor_up()
+        elif event.key == "down":
+            event.stop()
+            self.action_cursor_down()
+        elif event.key == "enter":
+            event.stop()
+            self.action_select_cursor()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Dismiss with the chosen option."""
+        self.dismiss(self.options[event.index])
+
+    def action_cursor_up(self) -> None:
+        """Move to the previous option."""
+        self.query_one("#extension-select-list", ListView).action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        """Move to the next option."""
+        self.query_one("#extension-select-list", ListView).action_cursor_down()
+
+    def action_select_cursor(self) -> None:
+        """Select the highlighted option."""
+        self.query_one("#extension-select-list", ListView).action_select_cursor()
+
+    def action_cancel(self) -> None:
+        """Close without choosing an option."""
+        self.dismiss(None)
+
+
+class ExtensionConfirmScreen(ModalScreen[bool]):
+    """Modal yes/no confirmation backing `context.ui.confirm`."""
+
+    BINDINGS: ClassVar[list[BindingEntry]] = [
+        Binding("escape", "cancel", "Cancel", priority=True),
+        Binding("up", "cursor_up", "Up", show=False, priority=True),
+        Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("enter", "select_cursor", "Select", show=False, priority=True),
+    ]
+
+    def __init__(self, title: str, message: str, *, theme: TuiTheme) -> None:
+        super().__init__()
+        self.title_text = title
+        self.message = message
+        self.theme = theme
+
+    def compose(self) -> ComposeResult:
+        """Compose the confirmation dialog."""
+        with Vertical(id="extension-confirm"):
+            yield Static(self.title_text, id="extension-confirm-title", markup=False)
+            yield Static(self.message, id="extension-confirm-message", markup=False)
+            yield ListView(
+                ListItem(Label("Yes", markup=False)),
+                ListItem(Label("No", markup=False)),
+                id="extension-confirm-list",
+            )
+            yield Static("Enter selects - Escape cancels", id="extension-confirm-help")
+
+    def on_mount(self) -> None:
+        """Focus the choice list."""
+        choice_list = self.query_one("#extension-confirm-list", ListView)
+        choice_list.index = 0
+        choice_list.focus()
+
+    def on_key(self, event: Key) -> None:
+        """Route arrow and enter keys to the choice list."""
+        if event.key == "up":
+            event.stop()
+            self.action_cursor_up()
+        elif event.key == "down":
+            event.stop()
+            self.action_cursor_down()
+        elif event.key == "enter":
+            event.stop()
+            self.action_select_cursor()
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        """Dismiss with the confirmation result (Yes is index 0)."""
+        self.dismiss(event.index == 0)
+
+    def action_cursor_up(self) -> None:
+        """Move to the previous choice."""
+        self.query_one("#extension-confirm-list", ListView).action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        """Move to the next choice."""
+        self.query_one("#extension-confirm-list", ListView).action_cursor_down()
+
+    def action_select_cursor(self) -> None:
+        """Select the highlighted choice."""
+        self.query_one("#extension-confirm-list", ListView).action_select_cursor()
+
+    def action_cancel(self) -> None:
+        """Close, declining the confirmation."""
+        self.dismiss(False)
+
+
+class ExtensionInputScreen(ModalScreen[str | None]):
+    """Modal single-line text prompt backing `context.ui.input`."""
+
+    BINDINGS: ClassVar[list[BindingEntry]] = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, title: str, placeholder: str = "", *, theme: TuiTheme) -> None:
+        super().__init__()
+        self.title_text = title
+        self.placeholder = placeholder
+        self.theme = theme
+
+    def compose(self) -> ComposeResult:
+        """Compose the text prompt."""
+        with Vertical(id="extension-input"):
+            yield Static(self.title_text, id="extension-input-title", markup=False)
+            yield Input(placeholder=self.placeholder, id="extension-input-field")
+            yield Static("Enter submits - Escape cancels", id="extension-input-help")
+
+    def on_mount(self) -> None:
+        """Focus the text field."""
+        self.query_one("#extension-input-field", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Dismiss with the entered text."""
+        if event.input.id != "extension-input-field":
+            return
+        event.stop()
+        self.dismiss(event.value)
+
+    def action_cancel(self) -> None:
+        """Close without submitting text."""
+        self.dismiss(None)
 
 
 class SessionPickerScreen(ModalScreen[str | None]):
@@ -1612,6 +1861,60 @@ class TauTuiApp(App[None]):
 
     #session-picker-help,
     #tree-picker-help {
+        height: 1;
+        margin-top: 1;
+        color: $tau-muted-text;
+    }
+
+    ExtensionSelectScreen,
+    ExtensionConfirmScreen,
+    ExtensionInputScreen {
+        align: center middle;
+    }
+
+    #extension-select,
+    #extension-confirm,
+    #extension-input {
+        width: 76;
+        max-width: 90%;
+        height: auto;
+        max-height: 70%;
+        padding: 1 2;
+        background: $tau-chrome-background;
+        border: tall $tau-border;
+    }
+
+    #extension-select-title,
+    #extension-confirm-title,
+    #extension-input-title {
+        height: auto;
+        color: $tau-chrome-text;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #extension-confirm-message {
+        height: auto;
+        color: $tau-chrome-text;
+        margin-bottom: 1;
+    }
+
+    #extension-select-list,
+    #extension-confirm-list {
+        height: auto;
+        max-height: 16;
+        background: $tau-transcript-background;
+        border: tall $tau-border;
+    }
+
+    #extension-input-field {
+        background: $tau-transcript-background;
+        border: tall $tau-border;
+    }
+
+    #extension-select-help,
+    #extension-confirm-help,
+    #extension-input-help {
         height: 1;
         margin-top: 1;
         color: $tau-muted-text;

@@ -83,6 +83,12 @@ def setup(tau):
     tau.context.cwd, tau.context.model, tau.context.provider_name
     tau.context.session_id, tau.context.system_prompt
     tau.context.is_running, tau.context.has_ui
+
+    # interactive UI dialogs (async; see "UI dialogs" below)
+    await tau.context.ui.select("Title", ["a", "b"])   # -> str | None
+    await tau.context.ui.confirm("Title", "message")   # -> bool
+    await tau.context.ui.input("Title", "placeholder") # -> str | None
+    tau.context.ui.notify("message", "info")           # same as tau.notify
 ```
 
 `setup` must be a plain `def` (not `async def`). Event handlers may be sync
@@ -109,6 +115,55 @@ build time; `/reload` rebuilds the prompt when guidelines change).
 slash command. Handlers are sync, receive `(args: str, context)`, and may
 return a `str` shown to the user. Built-in commands cannot be overridden.
 Extension commands appear in the TUI autocomplete automatically.
+
+### UI dialogs
+
+`tau.context.ui` gives extensions host-provided interactive dialogs (Pi's
+`ctx.ui`). All three dialog methods are `async`:
+
+```python
+choice = await tau.context.ui.select("Deploy to", ["staging", "prod"])
+ok     = await tau.context.ui.confirm("Deploy?", "This ships to production.")
+name   = await tau.context.ui.input("Release name", "e.g. v1.2.0")
+```
+
+- `select(title, options, *, timeout=None) -> str | None` — a picker;
+  returns the chosen option, or `None` if cancelled.
+- `confirm(title, message, *, timeout=None) -> bool` — a yes/no dialog;
+  returns `True` only if confirmed.
+- `input(title, placeholder="", *, timeout=None) -> str | None` — a text
+  prompt; returns the text (empty string on an empty submit), or `None` if
+  cancelled.
+- `timeout` is in **seconds**; when it elapses the dialog auto-dismisses and
+  returns the cancel default (`None`/`False`/`None`).
+
+Without an interactive frontend (print mode, `-p`, tests) every dialog
+returns its cancel default immediately, so extensions can call them
+unconditionally. Check `tau.context.ui.has_ui` (or `tau.context.has_ui`) if
+you want to branch on whether a real UI is attached.
+
+**Driving a dialog from a slash command.** Command handlers are synchronous,
+so they cannot `await` a dialog directly. Instead, spawn a task on the
+running event loop and return immediately:
+
+```python
+import asyncio
+
+def _handler(args, context):
+    async def _menu():
+        choice = await context.api.context.ui.select("Action", ["deploy", "cancel"])
+        if choice and choice != "cancel":
+            context.api.send_user_message(f"run {choice}")
+    asyncio.get_running_loop().create_task(_menu())
+    return "opening menu..."
+
+def setup(tau):
+    tau.register_command("menu", _handler)
+```
+
+The task runs on the same event loop as the session, so awaiting the dialog
+there is safe. (A tool executor, which is already `async`, can `await
+tau.context.ui...` directly.)
 
 ### Events
 
@@ -173,8 +228,9 @@ tau -x ./tau-subagents
 ## Not yet supported
 
 Compared to Pi's extension system, v1 does not yet include: package
-management (`pi install`-style), custom providers, custom TUI
-widgets/renderers/dialogs, keyboard shortcuts, CLI flag registration,
-system-prompt replacement, context rewriting, partial tool-result
-streaming, or a project trust store. The architecture document
+management (`pi install`-style), custom providers, extension-authored TUI
+widgets/renderers (the host-provided `context.ui` dialogs *are* supported),
+keyboard shortcuts, CLI flag registration, system-prompt replacement, context
+rewriting, partial tool-result streaming, or a project trust store. The
+architecture document
 (`dev-notes/architecture/phase-21-extensions.md`) tracks these.
