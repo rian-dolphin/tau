@@ -229,11 +229,14 @@ class TranscriptMessageWidget(Horizontal):
         *,
         theme: TuiTheme,
         show_tool_results: bool,
+        custom_markup: str | None = None,
     ) -> None:
         self.item = item
+        self._custom_markup = custom_markup if item.role == "custom" else None
         self.selection_text = transcript_item_selection_text(
             item,
             show_tool_results=show_tool_results,
+            custom_markup=self._custom_markup,
         )
         self._markdown_text = _transcript_item_markdown(
             item,
@@ -251,6 +254,18 @@ class TranscriptMessageWidget(Horizontal):
         yield body
 
     def _body_widget(self) -> Static | ThemedMarkdownWidget:
+        if self.item.role == "custom":
+            return Static(
+                _custom_body_renderable(
+                    self._custom_markup,
+                    raw_text=self.item.text,
+                    body_style=self._role_style.body,
+                ),
+                expand=True,
+                shrink=True,
+                markup=False,
+                classes="transcript-message-body transcript-plain-body",
+            )
         if _use_plain_transcript_body(self.item):
             body = Static(
                 _transcript_plain_body_text(
@@ -451,11 +466,17 @@ class TranscriptView(VerticalScroll):
                     hidden_thinking_placeholder = True
                 continue
             hidden_thinking_placeholder = False
+            custom_markup = (
+                state.resolve_custom_markup(item, expanded=state.show_tool_results)
+                if item.role == "custom"
+                else None
+            )
             self.mount(
                 TranscriptMessageWidget(
                     item,
                     theme=theme,
                     show_tool_results=state.show_tool_results or item.always_show_tool_result,
+                    custom_markup=custom_markup,
                 )
             )
         if state.assistant_buffer:
@@ -616,9 +637,42 @@ def transcript_item_selection_text(
     item: ChatItem,
     *,
     show_tool_results: bool = False,
+    custom_markup: str | None = None,
 ) -> str:
     """Return the plain text represented by a selectable transcript item."""
+    if item.role == "custom":
+        return _custom_selection_text(custom_markup, item.text)
     return _visible_chat_text(item, show_tool_results=show_tool_results)
+
+
+def _custom_markup_to_text(markup: str) -> Text:
+    """Parse Rich markup safely; fall back to literal text on malformed markup."""
+    try:
+        return Text.from_markup(markup)
+    except Exception:  # noqa: BLE001 - a bad renderer string must never crash the TUI
+        return Text(markup)
+
+
+def _custom_selection_text(markup: str | None, raw_text: str) -> str:
+    """Return the plain (markup-stripped) text of a custom item for selection."""
+    if markup is None:
+        return raw_text
+    return _custom_markup_to_text(markup).plain
+
+
+def _custom_body_renderable(
+    markup: str | None,
+    *,
+    raw_text: str,
+    body_style: str,
+) -> RenderableType:
+    """Render a custom message body from renderer markup, or raw text on fallback."""
+    if markup is None:
+        return Text(raw_text, style=body_style, overflow="fold", no_wrap=False)
+    text = _custom_markup_to_text(markup)
+    text.overflow = "fold"
+    text.no_wrap = False
+    return text
 
 
 def _split_rich_style_colors(style: str) -> tuple[str | None, str | None]:
@@ -830,27 +884,35 @@ def render_chat_item(
     *,
     theme: TuiTheme = TAU_DARK_THEME,
     show_tool_results: bool = False,
+    custom_markup: str | None = None,
 ) -> RenderableType:
     """Render a chat item as a standalone Toad-inspired transcript block."""
     role_style = _chat_item_role_style(item, theme)
-    body = (
-        _render_tool_chat_body(
-            item,
-            body_style=theme.role_styles["tool"].body,
-            accent_style=_tool_accent_style(item, theme=theme),
-            show_tool_results=show_tool_results,
-            syntax_theme=theme.syntax_theme,
-            theme=theme,
-        )
-        if item.role == "tool"
-        else _render_chat_body(
-            _visible_chat_text(item, show_tool_results=show_tool_results),
-            role=item.role,
+    if item.role == "custom":
+        body: RenderableType = _custom_body_renderable(
+            custom_markup,
+            raw_text=item.text,
             body_style=role_style.body,
-            syntax_theme=theme.syntax_theme,
-            theme=theme,
         )
-    )
+    else:
+        body = (
+            _render_tool_chat_body(
+                item,
+                body_style=theme.role_styles["tool"].body,
+                accent_style=_tool_accent_style(item, theme=theme),
+                show_tool_results=show_tool_results,
+                syntax_theme=theme.syntax_theme,
+                theme=theme,
+            )
+            if item.role == "tool"
+            else _render_chat_body(
+                _visible_chat_text(item, show_tool_results=show_tool_results),
+                role=item.role,
+                body_style=role_style.body,
+                syntax_theme=theme.syntax_theme,
+                theme=theme,
+            )
+        )
     table = Table.grid(expand=True)
     table.add_column(width=1, style=role_style.border)
     table.add_column(ratio=1, style=role_style.body)

@@ -50,6 +50,7 @@ from tau_agent import (
 )
 from tau_agent.messages import AgentMessage, UserMessage
 from tau_agent.tools import AgentTool
+from tau_agent.types import JSONValue
 from tau_ai import ProviderErrorEvent, ProviderEvent
 from tau_ai.provider import CancellationToken
 from tau_coding.commands import CommandRegistry, create_default_command_registry
@@ -2426,13 +2427,22 @@ class TauTuiApp(App[None]):
         self._notify(compact_message)
         self._refresh()
 
-    def _submit_prompt(self, text: str) -> None:
+    def _submit_prompt(
+        self,
+        text: str,
+        *,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Add a prompt to the transcript and start the agent worker."""
         self._prompt_run_id += 1
         run_id = self._prompt_run_id
         self._follow_transcript_output()
         self._refresh()
-        self._prompt_worker = self.run_worker(self._run_prompt(text, run_id), exclusive=True)
+        self._prompt_worker = self.run_worker(
+            self._run_prompt(text, run_id, custom_type=custom_type, details=details),
+            exclusive=True,
+        )
 
     def _connect_extension_runtime(self, session: CodingSession) -> None:
         """Give the extension runtime a UI bridge and an idle-run entry point."""
@@ -2441,19 +2451,31 @@ class TauTuiApp(App[None]):
             return
         runtime.set_ui_bridge(_TuiExtensionUiBridge(self))
         runtime.set_turn_requested_callback(self._on_extension_turn_requested)
+        # Let the transcript render custom messages via registered renderers.
+        self.state.custom_renderer = runtime.render_custom_message
 
-    def _on_extension_turn_requested(self, content: str) -> None:
+    def _on_extension_turn_requested(
+        self,
+        content: str,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Deliver an extension message through the serialized prompt path."""
-        self.call_later(self._deliver_extension_message, content)
+        self.call_later(self._deliver_extension_message, content, custom_type, details)
 
-    def _deliver_extension_message(self, content: str) -> None:
+    def _deliver_extension_message(
+        self,
+        content: str,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         if self.session.is_running or self._prompt_worker is not None:
             # A run started while the delivery was in flight; drain with it.
             queue_follow_up = getattr(self.session, "queue_follow_up_message", None)
             if callable(queue_follow_up):
-                queue_follow_up(content)
+                queue_follow_up(content, custom_type=custom_type, details=details)
             return
-        self._submit_prompt(content)
+        self._submit_prompt(content, custom_type=custom_type, details=details)
 
     def _follow_transcript_output(self) -> None:
         """Put the transcript back in follow mode for explicit user actions."""
@@ -2528,11 +2550,20 @@ class TauTuiApp(App[None]):
             return
         self._refresh()
 
-    async def _run_prompt(self, text: str, run_id: int | None = None) -> None:
+    async def _run_prompt(
+        self,
+        text: str,
+        run_id: int | None = None,
+        *,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Run one prompt and stream session events into the TUI state."""
         active_run_id = self._prompt_run_id if run_id is None else run_id
         try:
-            async for event in self.session.prompt(text):
+            async for event in self.session.prompt(
+                text, custom_type=custom_type, details=details
+            ):
                 if active_run_id != self._prompt_run_id:
                     return
                 self.adapter.apply(event)
