@@ -107,7 +107,11 @@ from tau_coding.tui.config import (
     load_tui_settings,
     save_tui_settings,
 )
-from tau_coding.tui.state import TuiState, format_terminal_command_result_block
+from tau_coding.tui.state import (
+    TOOL_SPINNER_FRAMES,
+    TuiState,
+    format_terminal_command_result_block,
+)
 from tau_coding.tui.terminal_title import TerminalTitleController
 from tau_coding.tui.widgets import (
     CompactSessionInfo,
@@ -4280,6 +4284,7 @@ class TauTuiApp(App[None]):
             self._apply_activity_indicator()
             return
         self._activity_frame = 0
+        self.state.tool_spinner = None
         if self._activity_timer is not None:
             self._activity_timer.pause()
         self._apply_activity_indicator()
@@ -4290,6 +4295,35 @@ class TauTuiApp(App[None]):
         self._activity_frame += 1
         self._apply_activity_indicator()
         self._sync_terminal_title()
+        self.state.tool_spinner = TOOL_SPINNER_FRAMES[
+            self._activity_frame % len(TOOL_SPINNER_FRAMES)
+        ]
+        self.call_later(self._respin_pending_tool)
+
+    async def _respin_pending_tool(self) -> None:
+        """Advance the spinner on the tool row that is currently executing."""
+        if not self.state.running:
+            return
+        item = next(
+            (
+                candidate
+                for candidate in reversed(self.state.items)
+                if candidate.role == "tool" and candidate.tool_result_text is None
+            ),
+            None,
+        )
+        if item is None:
+            return
+        try:
+            transcript = self.query_one("#transcript", TranscriptView)
+        except NoMatches:
+            return
+        await transcript.update_item(
+            item,
+            theme=self.tui_settings.resolved_theme,
+            show_tool_results=self.state.show_tool_results or item.always_show_tool_result,
+            invocation=self.state.resolve_tool_invocation(item),
+        )
 
     def _apply_activity_indicator(self) -> None:
         theme = self.tui_settings.resolved_theme
