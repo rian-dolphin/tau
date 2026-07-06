@@ -135,7 +135,7 @@ AGENT_VIEW_POLL_SECONDS = 0.5
 PROMPT_PLACEHOLDER = "Ask Tau…  Enter submits, Shift+Enter inserts a newline"
 AGENT_STRIP_STATUS_GLYPHS = {
     "queued": "◌",
-    "running": "●",
+    "running": "○",
     "done": "✓",
     "error": "✗",
     "cancelled": "∅",
@@ -4932,6 +4932,7 @@ def _render_agent_strip(
             row.append(f"  {detail}", style=theme.muted_text)
         rows.append(row)
 
+    # Exactly one filled accent dot: the row whose transcript is being viewed.
     main_active = active_id is None
     add_row(
         0,
@@ -4942,13 +4943,16 @@ def _render_agent_strip(
     )
     for index, source in enumerate(sources[:AGENT_STRIP_MAX_ROWS]):
         viewing = source.id == active_id
-        glyph = AGENT_STRIP_STATUS_GLYPHS.get(source.status, "○")
-        if source.status == "running":
+        if viewing:
+            glyph = "●"
             glyph_style = theme.accent
-        elif source.status == "error":
-            glyph_style = theme.role_styles["error"].border
         else:
-            glyph_style = theme.muted_text
+            glyph = AGENT_STRIP_STATUS_GLYPHS.get(source.status, "○")
+            glyph_style = (
+                theme.role_styles["error"].border
+                if source.status == "error"
+                else theme.muted_text
+            )
         add_row(
             index + 1,
             glyph,
