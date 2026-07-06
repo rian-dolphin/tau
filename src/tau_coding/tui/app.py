@@ -222,6 +222,19 @@ class _TuiExtensionUiBridge:
         )
         return await self._run_dialog(screen, default=None, timeout=timeout)
 
+    async def show_transcript(
+        self,
+        title: str,
+        messages: Sequence[AgentMessage],
+        *,
+        poll: Callable[[], Sequence[AgentMessage] | None] | None = None,
+        timeout: float | None = None,
+    ) -> bool:
+        """Show a modal transcript viewer; True when accepted with Enter."""
+        theme = self._app.tui_settings.resolved_theme
+        screen: ModalScreen[bool] = TranscriptScreen(title, messages, theme=theme, poll=poll)
+        return await self._run_dialog(screen, default=False, timeout=timeout)
+
     async def _run_dialog(
         self,
         screen: ModalScreen[_DialogResult],
@@ -1123,6 +1136,139 @@ class CommandOutputScreen(ModalScreen[None]):
     def action_scroll_down(self) -> None:
         """Scroll command output down."""
         self.query_one("#command-output-scroll", CommandOutputScroll).action_scroll_down()
+
+
+class TranscriptScreen(ModalScreen[bool]):
+    """Modal transcript viewer for a list of agent messages.
+
+    Ports pi-subagents' ConversationViewer overlay: extensions open it via
+    the UI bridge's `show_transcript` to show a (sub)agent's conversation
+    from that agent's point of view. Dismisses with True on Enter (the
+    caller may open follow-up actions) and False on Escape. An optional
+    ``poll`` callable re-renders the view live while its source session is
+    still producing messages.
+    """
+
+    POLL_INTERVAL_SECONDS = 0.5
+
+    BINDINGS: ClassVar[list[BindingEntry]] = [
+        Binding("escape", "close", "Close"),
+        Binding("enter", "accept", "Actions"),
+        Binding("up", "scroll_up", "Scroll up", show=False, priority=True),
+        Binding("down", "scroll_down", "Scroll down", show=False, priority=True),
+        Binding("ctrl+o", "toggle_tool_results", "Toggle tool results", show=False),
+    ]
+
+    def __init__(
+        self,
+        title: str,
+        messages: Sequence[AgentMessage],
+        *,
+        theme: TuiTheme,
+        poll: Callable[[], Sequence[AgentMessage] | None] | None = None,
+    ) -> None:
+        super().__init__()
+        self.title_text = title
+        self.theme = theme
+        self._messages = tuple(messages)
+        self._poll = poll
+        self._poll_timer: Timer | None = None
+        self._state = TuiState()
+        self._state.load_messages(self._messages)
+
+    def compose(self) -> ComposeResult:
+        """Compose the transcript viewer."""
+        with Vertical(id="agent-transcript"):
+            yield Static(self.title_text, id="agent-transcript-title")
+            yield TranscriptView(id="agent-transcript-view")
+            yield Static(
+                "Enter opens actions · Escape closes · Ctrl+O expands tool results",
+                id="agent-transcript-help",
+            )
+
+    def on_mount(self) -> None:
+        """Render the snapshot, focus for scrolling, and start live polling."""
+        # Share the app's renderer resolvers so tool calls and custom
+        # messages inside the viewed transcript render like the main chat.
+        app_state = getattr(self.app, "state", None)
+        if app_state is not None:
+            self._state.custom_renderer = app_state.custom_renderer
+            self._state.tool_call_renderer = app_state.tool_call_renderer
+        view = self.query_one("#agent-transcript-view", TranscriptView)
+        view.update_from_state(self._state, theme=self.theme)
+        view.focus()
+        # TranscriptView bottom-anchors itself for live streaming, and the
+        # anchor is only released by mouse scrolling — it snaps programmatic
+        # scrolls (our key bindings) straight back to the end. Release it
+        # once the initial jump-to-end has run; following new polled content
+        # still works through the redraw path's follow logic.
+        self.call_after_refresh(view.release_anchor)
+        if self._poll is not None:
+            self._poll_timer = self.set_interval(
+                self.POLL_INTERVAL_SECONDS, self._refresh_from_poll
+            )
+
+    def _refresh_from_poll(self) -> None:
+        """Re-render when the polled source has new messages; stop when gone."""
+        poll = self._poll
+        if poll is None:
+            return
+        try:
+            messages = poll()
+        except Exception:  # noqa: BLE001 - a poll source must never crash the TUI
+            messages = None
+        if messages is None:
+            # Source session is gone; keep the last snapshot on screen.
+            self._poll = None
+            if self._poll_timer is not None:
+                self._poll_timer.stop()
+                self._poll_timer = None
+            return
+        snapshot = tuple(messages)
+        if snapshot == self._messages:
+            return
+        self._messages = snapshot
+        self._render_snapshot()
+
+    def _render_snapshot(self) -> None:
+        self._state.clear()
+        self._state.load_messages(self._messages)
+        view = self.query_one("#agent-transcript-view", TranscriptView)
+        view.update_from_state(self._state, theme=self.theme)
+
+    def on_key(self, event: Key) -> None:
+        """Route arrow keys to the transcript scroll area."""
+        if event.key == "up":
+            event.stop()
+            self.action_scroll_up()
+        elif event.key == "down":
+            event.stop()
+            self.action_scroll_down()
+
+    def action_close(self) -> None:
+        """Dismiss the viewer without requesting follow-up actions."""
+        self.dismiss(False)
+
+    def action_accept(self) -> None:
+        """Dismiss the viewer and let the caller open follow-up actions."""
+        self.dismiss(True)
+
+    def action_scroll_up(self) -> None:
+        """Scroll the transcript up."""
+        view = self.query_one("#agent-transcript-view", TranscriptView)
+        view.release_anchor()
+        view.scroll_y = max(0, view.scroll_y - 1)
+
+    def action_scroll_down(self) -> None:
+        """Scroll the transcript down."""
+        view = self.query_one("#agent-transcript-view", TranscriptView)
+        view.release_anchor()
+        view.scroll_y = min(view.max_scroll_y, view.scroll_y + 1)
+
+    def action_toggle_tool_results(self) -> None:
+        """Toggle expanded tool results inside the viewer."""
+        self._state.toggle_tool_results()
+        self._render_snapshot()
 
 
 class LoginProviderPickerScreen(ModalScreen[str | None]):
@@ -2215,6 +2361,38 @@ class TauTuiApp(App[None]):
         color: $tau-muted-text;
     }
 
+    TranscriptScreen {
+        align: center middle;
+    }
+
+    #agent-transcript {
+        width: 90%;
+        height: 80%;
+        padding: 1 2;
+        background: $tau-chrome-background;
+        color: $tau-chrome-text;
+        border: tall $tau-border;
+    }
+
+    #agent-transcript-title {
+        height: 1;
+        color: $tau-chrome-text;
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    #agent-transcript-view {
+        height: 1fr;
+        background: $tau-transcript-background;
+        border: tall $tau-border;
+    }
+
+    #agent-transcript-help {
+        height: 1;
+        margin-top: 1;
+        color: $tau-muted-text;
+    }
+
     LoginMethodPickerScreen,
     LoginProviderPickerScreen,
     ThemePickerScreen,
@@ -2788,6 +2966,8 @@ class TauTuiApp(App[None]):
         runtime.set_turn_requested_callback(self._on_extension_turn_requested)
         # Let the transcript render custom messages via registered renderers.
         self.state.custom_renderer = runtime.render_custom_message
+        # Let tool calls render through their tool's render_call, if any.
+        self.state.tool_call_renderer = runtime.render_tool_call
 
     def _on_extension_turn_requested(
         self,
@@ -2970,10 +3150,12 @@ class TauTuiApp(App[None]):
             return
         if isinstance(event, ToolExecutionStartEvent):
             await transcript.finish_assistant_message()
+            item = self.state.items[-1]
             await transcript.append_item(
-                self.state.items[-1],
+                item,
                 theme=theme,
                 show_tool_results=self.state.show_tool_results,
+                invocation=self.state.resolve_tool_invocation(item),
             )
             self._refresh_chrome()
             return
@@ -2985,6 +3167,7 @@ class TauTuiApp(App[None]):
                     item,
                     theme=theme,
                     show_tool_results=self.state.show_tool_results or item.always_show_tool_result,
+                    invocation=self.state.resolve_tool_invocation(item),
                 )
             self._refresh_chrome()
             return
@@ -3079,7 +3262,7 @@ class TauTuiApp(App[None]):
 
     def action_completion_next(self) -> None:
         """Select the next prompt completion or move down in the prompt."""
-        if isinstance(self.screen, CommandOutputScreen):
+        if isinstance(self.screen, CommandOutputScreen | TranscriptScreen):
             self.screen.action_scroll_down()
             return
         if isinstance(
@@ -3103,7 +3286,7 @@ class TauTuiApp(App[None]):
 
     def action_completion_previous(self) -> None:
         """Select the previous prompt completion or move up in the prompt."""
-        if isinstance(self.screen, CommandOutputScreen):
+        if isinstance(self.screen, CommandOutputScreen | TranscriptScreen):
             self.screen.action_scroll_up()
             return
         if isinstance(

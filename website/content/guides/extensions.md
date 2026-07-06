@@ -116,6 +116,7 @@ def setup(tau):
     await tau.context.ui.select("Title", ["a", "b"])   # -> str | None
     await tau.context.ui.confirm("Title", "message")   # -> bool
     await tau.context.ui.input("Title", "placeholder") # -> str | None
+    await tau.context.ui.show_transcript("Title", messages)  # -> bool
     tau.context.ui.notify("message", "info")           # same as tau.notify
 ```
 
@@ -138,6 +139,13 @@ declares an `on_update` parameter receives a callback
 `(message: str, data: dict | None = None)`; each call becomes a
 `tool_execution_update` event and drives the TUI's live progress line.
 Executors without the parameter are unaffected.
+
+By default the TUI shows an unrecognized tool call as `name {arguments}`.
+Give the tool a `render_call` — `(arguments) -> str | None` — to render a
+friendly one-line invocation instead (Pi's `renderCall`): for example a
+subagent tool showing its `description` argument rather than the raw JSON.
+Return `None` to fall back to the generic line. Renderer errors are
+swallowed (diagnosed once per tool) and never crash the UI.
 
 For behavioral guidance not tied to any tool, `add_prompt_guideline(text)`
 adds a line to the system prompt's Guidelines section (de-duplicated at
@@ -168,8 +176,16 @@ name   = await tau.context.ui.input("Release name", "e.g. v1.2.0")
 - `input(title, placeholder="", *, timeout=None) -> str | None` — a text
   prompt; returns the text (empty string on an empty submit), or `None` if
   cancelled.
+- `show_transcript(title, messages, *, poll=None, timeout=None) -> bool` — a
+  full-screen scrollable transcript of `AgentMessage`s (a subagent's
+  conversation, rendered like the main chat; Ctrl+O expands tool results).
+  Pass `poll` — `() -> Sequence[AgentMessage] | None` — to re-render live
+  while the source session is still running; return `None` from it once the
+  source is gone and the view keeps its last snapshot. Returns `True` when
+  the user accepts with Enter (e.g. to open a follow-up menu), `False` on
+  Escape.
 - `timeout` is in **seconds**; when it elapses the dialog auto-dismisses and
-  returns the cancel default (`None`/`False`/`None`).
+  returns the cancel default (`None`/`False`/`None`/`False`).
 
 Without an interactive frontend (print mode, `-p`, tests) every dialog
 returns its cancel default immediately, so extensions can call them
@@ -189,7 +205,7 @@ def _handler(args, context):
         if choice and choice != "cancel":
             context.api.send_user_message(f"run {choice}")
     asyncio.get_running_loop().create_task(_menu())
-    return "opening menu..."
+    return None  # any returned text opens a modal the user must dismiss first
 
 def setup(tau):
     tau.register_command("menu", _handler)

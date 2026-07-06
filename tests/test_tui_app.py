@@ -19,6 +19,7 @@ from textual.widgets.markdown import MarkdownStream
 from tau_agent import (
     AgentEndEvent,
     AgentEvent,
+    AgentMessage,
     AgentStartEvent,
     AgentToolResult,
     AssistantMessage,
@@ -76,6 +77,7 @@ from tau_coding.tui.app import (
     SessionPickerScreen,
     TauTuiApp,
     ThemePickerScreen,
+    TranscriptScreen,
     TreePickerScreen,
     _activity_prompt_border_color,
     _completion_selected_render_line,
@@ -2609,6 +2611,193 @@ async def test_extension_input_dialog_escape_returns_none() -> None:
         result = await task
 
     assert result is None
+
+
+class _RenderCallRuntime:
+    """Minimal extension-runtime stub for `_connect_extension_runtime`."""
+
+    def set_ui_bridge(self, bridge) -> None:  # noqa: ANN001
+        del bridge
+
+    def set_turn_requested_callback(self, callback) -> None:  # noqa: ANN001
+        del callback
+
+    def render_custom_message(self, custom_type, content, details, expanded):  # noqa: ANN001
+        return None
+
+    def render_tool_call(self, name, arguments):  # noqa: ANN001
+        if name == "agent":
+            return f"▸ agent · {arguments.get('description')}"
+        return None
+
+
+@pytest.mark.anyio
+async def test_restored_tool_calls_render_via_render_call() -> None:
+    # Real startup order: session messages load into TuiState BEFORE the
+    # extension runtime connects, so the friendly line only appears if tool
+    # invocations resolve lazily at render time (not baked in at load).
+    session = FakeSession(
+        messages=[
+            AssistantMessage(
+                content="",
+                tool_calls=[
+                    ToolCall(
+                        id="call-1",
+                        name="agent",
+                        arguments={"prompt": "long prompt", "description": "Summarize codebase"},
+                    )
+                ],
+            )
+        ]
+    )
+    session.extension_runtime = _RenderCallRuntime()
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
+        assert "▸ agent · Summarize codebase" in widget.selection_text
+        assert "long prompt" not in widget.selection_text
+
+
+@pytest.mark.anyio
+async def test_render_call_line_composes_with_live_update_text() -> None:
+    session = FakeSession()
+    session.extension_runtime = _RenderCallRuntime()
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async def stream(event: AgentEvent) -> None:
+        app.adapter.apply(event)
+        await app._apply_streaming_transcript_event(event)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await stream(
+            ToolExecutionStartEvent(
+                tool_call=ToolCall(
+                    id="call-1",
+                    name="agent",
+                    arguments={"prompt": "x", "description": "Summarize codebase"},
+                )
+            )
+        )
+        await stream(
+            ToolExecutionUpdateEvent(tool_call_id="call-1", message="agent-1: bash · turn 1")
+        )
+        await pilot.pause()
+
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
+        assert "▸ agent · Summarize codebase" in widget.selection_text
+        assert "agent-1: bash · turn 1" in widget.selection_text
+
+
+@pytest.mark.anyio
+async def test_show_transcript_dialog_renders_messages_and_escape_dismisses() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+    messages = [
+        UserMessage(content="Summarize this codebase."),
+        AssistantMessage(content="Here is the summary."),
+    ]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.show_transcript("agent-1 [running]", messages))
+        await pilot.pause()
+
+        assert isinstance(app.screen, TranscriptScreen)
+        texts = [w.selection_text for w in app.screen.query(TranscriptMessageWidget)]
+        assert any("Summarize this codebase." in text for text in texts)
+        assert any("Here is the summary." in text for text in texts)
+
+        await pilot.press("escape")
+        assert await task is False
+
+
+@pytest.mark.anyio
+async def test_show_transcript_enter_accepts() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(
+            bridge.show_transcript("agent-1", [UserMessage(content="hi")])
+        )
+        await pilot.pause()
+        assert isinstance(app.screen, TranscriptScreen)
+        await pilot.press("enter")
+        assert await task is True
+
+
+@pytest.mark.anyio
+async def test_show_transcript_scrolls_with_arrow_keys() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+    messages = [UserMessage(content=f"message {index}") for index in range(40)]
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(bridge.show_transcript("agent-1", messages))
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TranscriptScreen)
+        view = screen.query_one("#agent-transcript-view", TranscriptView)
+        await pilot.pause()
+
+        # Opens at the bottom of a transcript taller than the viewport.
+        bottom = view.scroll_y
+        assert bottom > 0
+
+        # Up must actually move the viewport: TranscriptView's bottom anchor
+        # would otherwise snap every programmatic scroll back to the end.
+        await pilot.press("up")
+        await pilot.pause()
+        assert view.scroll_y < bottom
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert view.scroll_y == bottom
+
+        await pilot.press("escape")
+        assert await task is False
+
+
+@pytest.mark.anyio
+async def test_show_transcript_polls_live_source_until_gone() -> None:
+    app = TauTuiApp(FakeSession())  # type: ignore[arg-type]
+    live: list[AgentMessage] | None = [UserMessage(content="task prompt")]
+
+    def poll() -> list[AgentMessage] | None:
+        return None if live is None else list(live)
+
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        bridge = _TuiExtensionUiBridge(app)
+        task = asyncio.ensure_future(
+            bridge.show_transcript("agent-1", poll(), poll=poll)
+        )
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, TranscriptScreen)
+
+        # New messages from the live source re-render the view.
+        live.append(AssistantMessage(content="progress so far"))
+        screen._refresh_from_poll()
+        await pilot.pause()
+        texts = [w.selection_text for w in screen.query(TranscriptMessageWidget)]
+        assert any("progress so far" in text for text in texts)
+
+        # Once the source is gone the viewer keeps its last snapshot.
+        live = None
+        screen._refresh_from_poll()
+        await pilot.pause()
+        assert screen._poll is None
+        texts = [w.selection_text for w in screen.query(TranscriptMessageWidget)]
+        assert any("progress so far" in text for text in texts)
+
+        await pilot.press("escape")
+        assert await task is False
 
 
 @pytest.mark.anyio
