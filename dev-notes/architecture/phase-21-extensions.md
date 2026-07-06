@@ -413,6 +413,34 @@ and the host decides how to display it (Rich markup in the TUI, Rich `Text`
 in print mode). Malformed markup never crashes the frontend: `Text.from_markup`
 is called under a guard that falls back to literal text.
 
+**Ruling (reaffirmed 2026-07, subagents boundary audit):** the
+strings-not-widgets choice was revisited when the subagent UX (agents strip,
+in-place agent views) had to be built host-side against generic data seams
+rather than shipped by the extension, as pi-subagents does. Considered and
+rejected: a pi-style component seam (`ctx.ui.custom` / `setHeader` /
+`setFooter` / `setEditorComponent`). The decisive asymmetry is that **Pi
+ships its own TUI framework** — `@earendil-works/pi-tui` is a sibling
+package in the pi monorepo — so when Pi hands extensions a `Component` it
+exposes an interface it owns and can evolve in lockstep with its host. Tau
+renders with **Textual, a third-party toolkit**: a widget seam would promote
+Textual's API to Tau's public extension contract, making every Textual
+upgrade a potential ecosystem break and forever precluding a frontend swap.
+Strings additionally work in every frontend (TUI, print mode, future hosts)
+and cannot crash or wedge the render loop; extension needs so far (dialogs,
+message renderers, tool-call lines, transcript sources, themes) have all
+been expressible as data seams. Note the practical consequence: the "removes
+code from core" appeal is largely illusory — features would move out, but
+core would grow a widget-hosting layer (mounting, lifecycle, layout slots,
+focus/input routing, error isolation) with a much larger public contract.
+**Reopen triggers:** (a) Tau takes ownership of its UI layer (its own
+toolkit, or a hard abstraction over Textual); (b) a real third-party
+extension need that cannot be expressed as a data seam; (c) upstream tau
+explicitly wants component extensions. Preferred middle ground before raw
+widgets: a **declarative UI layer** (extensions emit structured component
+descriptions — block-kit style — that the host renders), which widens
+expressiveness while preserving toolkit independence; design it from Pi's
+`ctx.ui` surface first, per the porting rule above.
+
 **Ruling:** `custom_type`/`details` ride on **`UserMessage` metadata** rather
 than a separate `custom` message role (deviation from Pi's `CustomMessageEntry`
 / `role:"custom"`). Pi needs a distinct role because its messages are
