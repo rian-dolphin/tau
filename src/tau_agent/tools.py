@@ -39,6 +39,21 @@ class ToolUpdateCallback(Protocol):
         ...
 
 
+class ToolCallRenderer(Protocol):
+    """Optional display hook: render a tool call's arguments as one line.
+
+    Mirrors Pi's `ToolDefinition.renderCall`, reduced to Tau's convention
+    that renderers return plain strings rather than UI components. A
+    frontend consults it to show a friendly invocation line (e.g. the
+    subagent tool's `description` argument) instead of the generic
+    `name arguments` fallback. Returning ``None`` falls back.
+    """
+
+    def __call__(self, arguments: Mapping[str, JSONValue]) -> str | None:
+        """Return the display line for these arguments, or ``None``."""
+        ...
+
+
 class ToolExecutor(Protocol):
     """Async callable used to execute a tool."""
 
@@ -105,6 +120,7 @@ class AgentTool:
     executor: ToolExecutor
     prompt_snippet: str | None = None
     prompt_guidelines: tuple[str, ...] = ()
+    render_call: ToolCallRenderer | None = None
     _accepts_on_update: bool = field(init=False, repr=False, compare=False, default=False)
 
     def __post_init__(self) -> None:

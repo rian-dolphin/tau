@@ -53,6 +53,7 @@ from tau_agent.tools import (
     AgentTool,
     AgentToolResult,
     ToolCall,
+    ToolCallRenderer,
     ToolExecutor,
     ToolUpdateCallback,
 )
@@ -94,6 +95,7 @@ __all__ = [
     "ThinkingLevelChangeEntry",
     "ThinkingDeltaEvent",
     "ToolCall",
+    "ToolCallRenderer",
     "ToolExecutionEndEvent",
     "ToolExecutionStartEvent",
     "ToolExecutionUpdateEvent",

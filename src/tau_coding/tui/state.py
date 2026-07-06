@@ -10,7 +10,7 @@ from typing import Literal
 from tau_agent.messages import AgentMessage
 from tau_agent.tools import AgentToolResult, ToolCall
 from tau_agent.types import JSONValue
-from tau_coding.extensions.api import CustomMessageMarkup
+from tau_coding.extensions.api import CustomMessageMarkup, ToolCallMarkup
 from tau_coding.skills import Skill, parse_skill_invocation
 
 ChatItemRole = Literal[
@@ -40,6 +40,8 @@ class ChatItem:
     tool_call_id: str | None = None
     tool_result_text: str | None = None
     update_text: str | None = None
+    tool_name: str | None = None
+    tool_arguments: dict[str, JSONValue] | None = None
     always_show_tool_result: bool = False
     custom_type: str | None = None
     details: dict[str, JSONValue] | None = None
@@ -59,6 +61,7 @@ class TuiState:
     queued_follow_up: tuple[str, ...] = ()
     skills: tuple[Skill, ...] = ()
     custom_renderer: CustomMessageMarkup | None = None
+    tool_call_renderer: ToolCallMarkup | None = None
 
     def add_item(
         self,
@@ -95,6 +98,18 @@ class TuiState:
             return None
         return self.custom_renderer(item.custom_type, item.text, item.details, expanded)
 
+    def resolve_tool_invocation(self, item: ChatItem) -> str | None:
+        """Render a tool item's invocation via the installed resolver, or ``None``.
+
+        Resolved lazily at render time (like custom markup) so tool calls
+        restored before the extension runtime connects still pick up their
+        tool's `render_call` on the next redraw. ``None`` means "no renderer"
+        and the caller falls back to the generic ``item.text``.
+        """
+        if item.role != "tool" or item.tool_name is None or self.tool_call_renderer is None:
+            return None
+        return self.tool_call_renderer(item.tool_name, item.tool_arguments or {})
+
     def add_tool_call(self, tool_call: ToolCall) -> None:
         """Append a collapsed tool-call item."""
         skill_name = self._read_skill_name(tool_call)
@@ -105,10 +120,14 @@ class TuiState:
                 tool_call_id=tool_call.id,
             )
             return
-        self.add_item(
-            "tool",
-            format_tool_call_block(tool_call),
-            tool_call_id=tool_call.id,
+        self.items.append(
+            ChatItem(
+                role="tool",
+                text=format_tool_call_block(tool_call),
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                tool_arguments=tool_call.arguments,
+            )
         )
 
     def add_user_message(
@@ -330,9 +349,15 @@ def _read_line_suffix(arguments: dict[str, JSONValue]) -> str:
     return f":{start}-{start + max(1, limit) - 1}"
 
 
+FALLBACK_INVOCATION_ARGS_CHARS = 160
+
+
 def _fallback_tool_call_invocation(tool_call: ToolCall) -> str:
     if tool_call.arguments:
-        return f"{tool_call.name} {tool_call.arguments}"
+        rendered = str(tool_call.arguments)
+        if len(rendered) > FALLBACK_INVOCATION_ARGS_CHARS:
+            rendered = rendered[:FALLBACK_INVOCATION_ARGS_CHARS].rstrip() + "…"
+        return f"{tool_call.name} {rendered}"
     return tool_call.name
 
 

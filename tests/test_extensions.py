@@ -1598,6 +1598,74 @@ def test_render_custom_message_reports_failure_once_per_custom_type(tmp_path: Pa
     assert len(failures) == 1
 
 
+# -- tool-call renderers --------------------------------------------------------
+
+
+async def _idle_executor(arguments, signal=None):  # noqa: ANN001, ANN202
+    return AgentToolResult(tool_call_id="", name="idle", ok=True, content="")
+
+
+def _renderable_tool(name: str, render_call=None) -> AgentTool:  # noqa: ANN001
+    return AgentTool(
+        name=name,
+        description="a tool",
+        input_schema={"type": "object"},
+        executor=_idle_executor,
+        render_call=render_call,
+    )
+
+
+def test_render_tool_call_uses_tool_renderer(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _inline_api(runtime, "subagents")
+    seen: list[dict[str, JSONValue]] = []
+
+    def render(arguments) -> str:  # noqa: ANN001
+        seen.append(dict(arguments))
+        return f"▸ agent · {arguments.get('description')}"
+
+    api.register_tool(_renderable_tool("agent", render))
+
+    line = runtime.render_tool_call("agent", {"description": "Summarize codebase"})
+
+    assert line == "▸ agent · Summarize codebase"
+    assert seen == [{"description": "Summarize codebase"}]
+
+
+def test_render_tool_call_returns_none_without_renderer(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _inline_api(runtime, "subagents")
+    api.register_tool(_renderable_tool("agent"))
+
+    assert runtime.render_tool_call("agent", {}) is None
+    assert runtime.render_tool_call("unregistered", {}) is None
+
+
+def test_render_tool_call_swallows_errors_and_reports_once(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _inline_api(runtime, "boom")
+
+    def render(arguments) -> str:  # noqa: ANN001
+        raise RuntimeError("renderer exploded")
+
+    api.register_tool(_renderable_tool("boom-tool", render))
+
+    for _ in range(5):
+        assert runtime.render_tool_call("boom-tool", {}) is None
+
+    failures = [d for d in runtime.diagnostics if "render_call:boom-tool" in d.message]
+    assert len(failures) == 1
+
+
+def test_render_tool_call_rejects_non_string_result(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _inline_api(runtime, "subagents")
+    api.register_tool(_renderable_tool("agent", lambda arguments: 42))
+
+    assert runtime.render_tool_call("agent", {}) is None
+    assert any("render_call:agent" in d.message for d in runtime.diagnostics)
+
+
 def test_render_custom_message_rejects_non_string_result(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "wrong")
