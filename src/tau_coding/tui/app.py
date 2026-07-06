@@ -2977,7 +2977,18 @@ class TauTuiApp(App[None]):
             )
             self._refresh_chrome()
             return
-        if isinstance(event, ToolExecutionUpdateEvent | RetryEvent | ErrorEvent):
+        if isinstance(event, ToolExecutionUpdateEvent):
+            await transcript.finish_assistant_message()
+            item = self.state.find_tool_item(event.tool_call_id)
+            if item is not None:
+                await transcript.update_item(
+                    item,
+                    theme=theme,
+                    show_tool_results=self.state.show_tool_results or item.always_show_tool_result,
+                )
+            self._refresh_chrome()
+            return
+        if isinstance(event, RetryEvent | ErrorEvent):
             await transcript.finish_assistant_message()
             if self.state.items:
                 await transcript.append_item(

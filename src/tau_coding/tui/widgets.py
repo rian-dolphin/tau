@@ -667,6 +667,29 @@ class TranscriptView(VerticalScroll):
             self._request_follow_scroll(force=scroll_end)
         return widget
 
+    async def update_item(
+        self,
+        item: ChatItem,
+        *,
+        theme: TuiTheme = TAU_DARK_THEME,
+        show_tool_results: bool = False,
+    ) -> bool:
+        """Re-render one already-mounted transcript item in place."""
+        for child in self.children:
+            if isinstance(child, TranscriptMessageWidget) and child.item is item:
+                replacement = _transcript_widget(
+                    item,
+                    theme=theme,
+                    show_tool_results=show_tool_results,
+                )
+                await self.mount(replacement, after=child)
+                await child.remove()
+                self.refresh(layout=True)
+                if self._should_follow_output:
+                    self._request_follow_scroll()
+                return True
+        return False
+
     async def start_assistant_message(
         self,
         *,
@@ -1185,9 +1208,13 @@ def _visible_chat_text(item: ChatItem, *, show_tool_results: bool) -> str:
         if show_tool_results and item.tool_result_text:
             return f"**Compaction Summary**\n\n{item.tool_result_text}"
         return item.text
-    if item.role not in {"tool", "skill"} or not show_tool_results or not item.tool_result_text:
+    if item.role not in {"tool", "skill"}:
         return item.text
-    return f"{item.text}\n\n{item.tool_result_text}"
+    if show_tool_results and item.tool_result_text:
+        return f"{item.text}\n\n{item.tool_result_text}"
+    if item.update_text and not item.tool_result_text:
+        return f"{item.text}\n\n… {item.update_text}"
+    return item.text
 
 
 def _render_chat_body(

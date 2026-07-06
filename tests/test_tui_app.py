@@ -31,6 +31,7 @@ from tau_agent import (
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
     ToolResultMessage,
     UserMessage,
 )
@@ -1257,6 +1258,54 @@ async def test_streaming_transcript_applies_role_foreground() -> None:
             w for w in app.query(StreamingTranscriptMessageWidget) if w.item.role == "assistant"
         )
         assert assistant.styles.color == Color.parse(assistant_fg)
+
+
+@pytest.mark.anyio
+async def test_tool_execution_updates_render_in_place() -> None:
+    app = TauTuiApp(FakeSession())
+
+    async def stream(event: AgentEvent) -> None:
+        app.adapter.apply(event)
+        await app._apply_streaming_transcript_event(event)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await stream(
+            ToolExecutionStartEvent(
+                tool_call=ToolCall(id="call-1", name="agent", arguments={"prompt": "explore"})
+            )
+        )
+        await stream(
+            ToolExecutionUpdateEvent(tool_call_id="call-1", message="agent-1: bash · turn 1")
+        )
+        await pilot.pause()
+
+        tool_widgets = [w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool"]
+        assert len(tool_widgets) == 1
+        assert "agent-1: bash · turn 1" in tool_widgets[0].selection_text
+
+        # A later update replaces the progress line instead of appending a block.
+        await stream(
+            ToolExecutionUpdateEvent(tool_call_id="call-1", message="agent-1: turn 2 done")
+        )
+        await pilot.pause()
+        tool_widgets = [w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool"]
+        assert len(tool_widgets) == 1
+        assert "agent-1: turn 2 done" in tool_widgets[0].selection_text
+        assert "turn 1" not in tool_widgets[0].selection_text
+
+        # The final result clears the transient progress line.
+        await stream(
+            ToolExecutionEndEvent(
+                result=AgentToolResult(
+                    tool_call_id="call-1", name="agent", ok=True, content="report"
+                )
+            )
+        )
+        await pilot.pause()
+        tool_widgets = [w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool"]
+        assert len(tool_widgets) == 1
+        assert "turn 2 done" not in tool_widgets[0].selection_text
 
 
 @pytest.mark.anyio

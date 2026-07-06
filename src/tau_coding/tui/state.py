@@ -39,6 +39,7 @@ class ChatItem:
     text: str
     tool_call_id: str | None = None
     tool_result_text: str | None = None
+    update_text: str | None = None
     always_show_tool_result: bool = False
     custom_type: str | None = None
     details: dict[str, JSONValue] | None = None
@@ -160,6 +161,21 @@ class TuiState:
             return
         self.add_item("thinking", delta)
 
+    def find_tool_item(self, tool_call_id: str) -> ChatItem | None:
+        """Return the transcript item for a tool call id, or ``None``."""
+        for item in reversed(self.items):
+            if item.role in {"tool", "skill"} and item.tool_call_id == tool_call_id:
+                return item
+        return None
+
+    def record_tool_update(self, tool_call_id: str, message: str) -> ChatItem | None:
+        """Attach live progress to its pending tool call; drop orphan updates."""
+        item = self.find_tool_item(tool_call_id)
+        if item is None or item.tool_result_text is not None:
+            return None
+        item.update_text = message
+        return item
+
     def record_tool_result(self, result: AgentToolResult) -> None:
         """Attach a tool result to its matching call, or append an orphan result."""
         result_text = format_tool_result_block(
@@ -171,6 +187,7 @@ class TuiState:
         for item in reversed(self.items):
             if item.role in {"tool", "skill"} and item.tool_call_id == result.tool_call_id:
                 item.tool_result_text = result_text
+                item.update_text = None
                 return
         self.add_item(
             "tool",
