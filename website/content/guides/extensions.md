@@ -184,6 +184,9 @@ name   = await tau.context.ui.input("Release name", "e.g. v1.2.0")
   source is gone and the view keeps its last snapshot. Returns `True` when
   the user accepts with Enter (e.g. to open a follow-up menu), `False` on
   Escape.
+- `view_transcript(source_id) -> bool` — swap the main transcript to a
+  registered transcript source (see "Transcript sources" below), in place.
+  Returns `True` when the view switched.
 - `timeout` is in **seconds**; when it elapses the dialog auto-dismisses and
   returns the cancel default (`None`/`False`/`None`/`False`).
 
@@ -214,6 +217,43 @@ def setup(tau):
 The task runs on the same event loop as the session, so awaiting the dialog
 there is safe. (A tool executor, which is already `async`, can `await
 tau.context.ui...` directly.)
+
+### Transcript sources (the agents strip)
+
+An extension that runs its own conversations (e.g. subagents) can publish
+them so the TUI lists them in an *agents strip* under the prompt: `← ` in an
+empty prompt enters the strip, ↑/↓ select, Enter swaps the main transcript to
+that agent's conversation in place, Esc returns to main. While an agent view
+is open the input talks to that agent — submissions become steering messages
+(the prompt's placeholder and prefix make this explicit).
+
+```python
+from tau_coding.extensions import TranscriptSource
+
+def sources() -> tuple[TranscriptSource, ...]:
+    return tuple(
+        TranscriptSource(
+            id=run.id,
+            label=run.agent_type,
+            detail=run.description,
+            status=run.status,        # queued|running|done|error|cancelled
+            messages=lambda run=run: run.messages(),  # None once truly gone
+            revision=run.revision,    # cheap change counter for re-renders
+            steer=run.steer,          # optional; None once finished
+        )
+        for run in my_runs
+    )
+
+def setup(tau):
+    tau.set_transcript_source_provider(sources)
+    # fire this whenever the run list or a status changes:
+    # tau.notify_transcript_sources_changed()
+```
+
+The provider is called on the host's refresh path and must be cheap. The
+host polls an *open* view's `messages()` only when `revision` changes; it
+never polls for membership — fire `notify_transcript_sources_changed()` on
+spawn, completion, and teardown instead.
 
 ### Events
 

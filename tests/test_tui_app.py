@@ -39,6 +39,7 @@ from tau_agent import (
 from tau_coding.catalog_loader import user_catalog_path
 from tau_coding.commands import CommandResult
 from tau_coding.credentials import FileCredentialStore, OAuthCredential
+from tau_coding.extensions import TranscriptSource
 from tau_coding.paths import TauPaths
 from tau_coding.prompt_templates import PromptTemplate
 from tau_coding.provider_config import (
@@ -2798,6 +2799,219 @@ async def test_show_transcript_polls_live_source_until_gone() -> None:
 
         await pilot.press("escape")
         assert await task is False
+
+
+class _StripRuntime(_RenderCallRuntime):
+    """Runtime stub that also implements the transcript-sources seam."""
+
+    def __init__(self, sources=()) -> None:  # noqa: ANN001
+        self.sources = list(sources)
+        self.changed_callback = None
+
+    def set_transcript_sources_changed_callback(self, callback) -> None:  # noqa: ANN001
+        self.changed_callback = callback
+
+    def transcript_sources(self):  # noqa: ANN202
+        return tuple(self.sources)
+
+
+def _strip_source(
+    *,
+    source_id: str = "agent-1",
+    status: str = "running",
+    messages=None,  # noqa: ANN001
+    revision: int = 1,
+    steer=None,  # noqa: ANN001
+) -> TranscriptSource:
+    if messages is None:
+        content = [
+            UserMessage(content="child prompt"),
+            AssistantMessage(content="child progress"),
+        ]
+        messages = lambda: tuple(content)  # noqa: E731
+    return TranscriptSource(
+        id=source_id,
+        label="explore",
+        detail="Codebase TLDR survey",
+        status=status,  # type: ignore[arg-type]
+        messages=messages,
+        revision=revision,
+        steer=steer,
+    )
+
+
+@pytest.mark.anyio
+async def test_agent_strip_opens_in_place_view_and_steers() -> None:
+    steered: list[str] = []
+    source = _strip_source(steer=steered.append)
+    runtime = _StripRuntime([source])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert runtime.changed_callback is not None
+        runtime.changed_callback()
+        await pilot.pause()
+
+        strip = app.query_one("#agent-strip", Static)
+        assert strip.display
+
+        # Left in an empty prompt enters the strip; down + enter opens the view.
+        await pilot.press("left")
+        assert app._strip_focused
+        await pilot.press("down")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app._active_source_id == "agent-1"
+        pane = app.query_one("#agent-transcript-pane", TranscriptView)
+        assert pane.display
+        assert not app.query_one("#transcript", TranscriptView).display
+        texts = [w.selection_text for w in pane.query(TranscriptMessageWidget)]
+        assert any("child prompt" in text for text in texts)
+        assert any("child progress" in text for text in texts)
+
+        # The input talks to the viewed agent: submissions steer it, not main.
+        await pilot.press("f", "o", "c", "u", "s")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert steered == ["focus"]
+        assert session.prompt_texts == []
+
+        # Escape returns to main without cancelling anything.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._active_source_id is None
+        assert app.query_one("#transcript", TranscriptView).display
+        assert not pane.display
+
+
+@pytest.mark.anyio
+async def test_agent_view_rejects_steering_finished_agents() -> None:
+    runtime = _StripRuntime([_strip_source(status="done")])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        runtime.changed_callback()
+        await pilot.pause()
+        assert app._activate_source_by_id("agent-1")
+        await pilot.pause()
+
+        prompt = app.query_one("#prompt", PromptInput)
+        assert "finished" in prompt.placeholder
+        await pilot.press("h", "i")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Nothing was steered or submitted to main; the text is preserved.
+        assert session.prompt_texts == []
+        assert prompt.text == "hi"
+
+
+@pytest.mark.anyio
+async def test_agent_view_rerenders_on_revision_change() -> None:
+    content: list[AgentMessage] = [UserMessage(content="child prompt")]
+    revision = {"value": 1}
+
+    class _LiveRuntime(_StripRuntime):
+        def transcript_sources(self):  # noqa: ANN202
+            return (
+                _strip_source(
+                    messages=lambda: tuple(content),
+                    revision=revision["value"],
+                ),
+            )
+
+    runtime = _LiveRuntime()
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert app._activate_source_by_id("agent-1")
+        await pilot.pause()
+
+        content.append(AssistantMessage(content="new child output"))
+        revision["value"] = 2
+        app._tick_agent_view()
+        await pilot.pause()
+
+        pane = app.query_one("#agent-transcript-pane", TranscriptView)
+        texts = [w.selection_text for w in pane.query(TranscriptMessageWidget)]
+        assert any("new child output" in text for text in texts)
+
+
+@pytest.mark.anyio
+async def test_agent_view_activation_degrades_when_messages_gone() -> None:
+    runtime = _StripRuntime([_strip_source(messages=lambda: None)])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        # A source whose messages() returns None must degrade to a notice,
+        # not crash or switch the view; False lets /agents fall back cleanly.
+        assert app._activate_source_by_id("agent-1") is False
+        await pilot.pause()
+        assert app._active_source_id is None
+        assert app.query_one("#transcript", TranscriptView).display
+        assert not app.query_one("#agent-transcript-pane", TranscriptView).display
+
+
+@pytest.mark.anyio
+async def test_escape_returns_to_main_before_cancelling_a_running_turn() -> None:
+    runtime = _StripRuntime([_strip_source()])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    cancels: list[int] = []
+    session.cancel = lambda: cancels.append(1)  # type: ignore[attr-defined]
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert app._activate_source_by_id("agent-1")
+        await pilot.pause()
+        app.state.running = True  # main is mid-turn while the agent view is open
+
+        # First Escape only returns to main — it must not cancel the turn.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app._active_source_id is None
+        assert cancels == []
+
+        # A second Escape performs the normal cancel.
+        await pilot.press("escape")
+        await pilot.pause()
+        assert cancels == [1]
+
+
+@pytest.mark.anyio
+async def test_agent_view_returns_to_main_when_source_vanishes() -> None:
+    runtime = _StripRuntime([_strip_source()])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        assert app._activate_source_by_id("agent-1")
+        await pilot.pause()
+        assert app._active_source_id == "agent-1"
+
+        runtime.sources = []
+        runtime.changed_callback()
+        await pilot.pause()
+
+        assert app._active_source_id is None
+        assert app.query_one("#transcript", TranscriptView).display
+        assert not app.query_one("#agent-strip", Static).display
 
 
 @pytest.mark.anyio
