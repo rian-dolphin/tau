@@ -93,6 +93,44 @@ ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
 # session is gone (the view then keeps its last snapshot and stops polling).
 TranscriptPoll = Callable[[], "Sequence[AgentMessage] | None"]
 
+TranscriptSourceStatus = Literal["queued", "running", "done", "error", "cancelled"]
+
+
+@dataclass(frozen=True, slots=True)
+class TranscriptSource:
+    """One alternate transcript a frontend can show alongside the main chat.
+
+    Extensions publish these (e.g. one per subagent run) via a provider set
+    with :meth:`ExtensionAPI.set_transcript_source_provider`. The host lists
+    them in its agents strip and can swap its transcript view to one in
+    place.
+
+    ``messages`` returns the source's current conversation, or ``None`` once
+    it is truly gone (evicted); a finished source should keep returning its
+    final messages. ``revision`` is a cheap monotonic change counter so the
+    host can skip re-rendering unchanged content. ``steer``, when set, lets
+    the host deliver a user steering message to a still-running source.
+    """
+
+    id: str
+    label: str
+    status: TranscriptSourceStatus
+    messages: Callable[[], Sequence[AgentMessage] | None]
+    detail: str = ""
+    revision: int = 0
+    steer: Callable[[str], None] | None = None
+
+
+# Extension-side provider: returns the extension's current transcript
+# sources, newest state each call. Must be cheap; the host calls it on its
+# UI refresh path.
+TranscriptSourceProvider = Callable[[], "Sequence[TranscriptSource]"]
+
+# Host-side signal installed by the frontend: extensions fire it (via
+# `ExtensionAPI.notify_transcript_sources_changed`) when their source list or
+# statuses change, so the host refreshes its strip without polling.
+TranscriptSourcesChangedCallback = Callable[[], None]
+
 
 class ExtensionError(RuntimeError):
     """Raised when an extension misuses the API (e.g. actions before binding)."""
@@ -252,6 +290,10 @@ class UiBridge(Protocol):
         """Show a scrollable transcript of messages; True if accepted (Enter)."""
         ...
 
+    async def view_transcript(self, source_id: str) -> bool:
+        """Swap the main transcript to a registered source; True on success."""
+        ...
+
 
 class NullUiBridge:
     """UI bridge used when no interactive frontend is attached."""
@@ -303,6 +345,10 @@ class NullUiBridge:
         timeout: float | None = None,
     ) -> bool:
         """Return False: no UI to show a transcript in."""
+        return False
+
+    async def view_transcript(self, source_id: str) -> bool:
+        """Return False: no UI to swap a transcript view in."""
         return False
 
 
@@ -390,6 +436,16 @@ class ExtensionUi:
         the user accepts (Enter), False on dismiss (Escape) or without a UI.
         """
         return await self._runtime.ui.show_transcript(title, messages, poll=poll, timeout=timeout)
+
+    async def view_transcript(self, source_id: str) -> bool:
+        """Swap the host's main transcript to a registered transcript source.
+
+        The id must match a source published via
+        :meth:`ExtensionAPI.set_transcript_source_provider`. Returns ``True``
+        when the host switched its view (the user lands in the in-place agent
+        view), ``False`` when the source is unknown or there is no UI.
+        """
+        return await self._runtime.ui.view_transcript(source_id)
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Show a notification in the UI, if one is attached."""
@@ -580,6 +636,20 @@ class ExtensionAPI:
     async def append_entry(self, namespace: str, data: dict[str, JSONValue]) -> None:
         """Persist extension-owned data to the session as a custom entry."""
         await self._runtime.append_custom_entry(namespace, data)
+
+    def set_transcript_source_provider(self, provider: TranscriptSourceProvider) -> None:
+        """Publish this extension's transcript sources to the frontend.
+
+        The provider is called on the host's UI refresh path and must be
+        cheap. One provider per extension; setting again replaces it. Call
+        :meth:`notify_transcript_sources_changed` when the source list or a
+        source's status changes so the host refreshes promptly.
+        """
+        self._runtime.set_transcript_source_provider(self._extension_name, provider)
+
+    def notify_transcript_sources_changed(self) -> None:
+        """Tell the frontend the transcript-source list or statuses changed."""
+        self._runtime.notify_transcript_sources_changed()
 
     def notify(self, message: str, level: NotifyLevel = "info") -> None:
         """Show a notification in the UI, if one is attached."""
