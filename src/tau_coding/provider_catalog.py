@@ -19,7 +19,7 @@ class ProviderCatalogEntry:
     kind: ProviderKind
     base_url: str
     api_key_env: str
-    credential_name: str
+    credential_name: str | None
     models: tuple[str, ...]
     default_model: str
     docs_url: str
