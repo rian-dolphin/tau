@@ -2432,6 +2432,15 @@ async def test_pending_tool_row_shows_spinner_while_running() -> None:
         assert same_widget.selection_text[0] in TOOL_SPINNER_FRAMES
         assert same_widget.selection_text[0] != first_frame
 
+        # Once the tool has been working for a while, the row shows a live
+        # elapsed timer after the description.
+        tool_item = next(item for item in app.state.items if item.role == "tool")
+        assert tool_item.started_at is not None
+        tool_item.started_at -= 83
+        app._tick_activity()
+        await pilot.pause()
+        assert "(1m 23s)" in widget.selection_text
+
         # Once the result lands the static marker returns.
         await stream(
             ToolExecutionEndEvent(
@@ -2698,6 +2707,42 @@ async def test_agent_view_rerenders_on_revision_change() -> None:
         pane = app.query_one("#agent-transcript-pane", TranscriptView)
         texts = [w.selection_text for w in pane.query(TranscriptMessageWidget)]
         assert any("new child output" in text for text in texts)
+
+
+@pytest.mark.anyio
+async def test_agent_strip_fills_only_the_viewed_dot() -> None:
+    runtime = _StripRuntime([_strip_source()])
+    session = FakeSession()
+    session.extension_runtime = runtime
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    def strip_lines() -> list[str]:
+        group = tui_app._render_agent_strip(
+            app._agent_strip_sources,
+            selected_index=None,
+            active_id=app._active_source_id,
+            focused=False,
+            theme=TAU_DARK_THEME,
+        )
+        console = Console(record=True, width=80)
+        console.print(group)
+        return console.export_text().splitlines()
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        runtime.changed_callback()
+        await pilot.pause()
+
+        # Viewing main: main's dot is filled, the running agent's is hollow.
+        lines = strip_lines()
+        assert "● main" in lines[0]
+        assert "○ explore" in lines[1]
+
+        assert app._activate_source_by_id("agent-1")
+        await pilot.pause()
+        lines = strip_lines()
+        assert "○ main" in lines[0]
+        assert "● explore" in lines[1]
 
 
 @pytest.mark.anyio

@@ -140,12 +140,18 @@ declares an `on_update` parameter receives a callback
 `tool_execution_update` event and drives the TUI's live progress line.
 Executors without the parameter are unaffected.
 
-By default the TUI shows an unrecognized tool call as `name {arguments}`.
-Give the tool a `render_call` — `(arguments) -> str | None` — to render a
-friendly one-line invocation instead (Pi's `renderCall`): for example a
-subagent tool showing its `description` argument rather than the raw JSON.
-Return `None` to fall back to the generic line. Renderer errors are
-swallowed (diagnosed once per tool) and never crash the UI.
+By default the TUI shows an unrecognized tool call as `name {arguments}`
+(truncated). Give the tool a `render_call` — `(arguments) -> str | None` —
+to render a friendly one-line invocation instead (Pi's `renderCall`): for
+example a subagent tool showing its `description` argument rather than the
+raw JSON. Return `None` to fall back to the generic line. Renderer errors
+are swallowed (diagnosed once per tool) and never crash the UI.
+
+While a tool is executing, the TUI animates its row: a braille spinner
+stands in for the line's leading marker (`→ ` / `▸ `) and, after the first
+second, a live elapsed time is appended (`… (1m 23s)`). Keep `render_call`
+output to a single line starting with a marker like `▸ ` so the spinner has
+something to replace.
 
 For behavioral guidance not tied to any tool, `add_prompt_guideline(text)`
 adds a line to the system prompt's Guidelines section (de-duplicated at

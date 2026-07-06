@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,9 @@ TERMINAL_COMMAND_OUTPUT_PREVIEW_LINES = 120
 TOOL_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 # Static invocation markers the spinner stands in for while a tool runs.
 _INVOCATION_MARKERS = ("→ ", "▸ ")
+# Show the live elapsed time on an executing tool row once it stops being
+# instant; quick reads/edits never flash a "(0s)".
+TOOL_TIMER_MIN_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -45,6 +49,7 @@ class ChatItem:
     update_text: str | None = None
     tool_name: str | None = None
     tool_arguments: dict[str, JSONValue] | None = None
+    started_at: float | None = None
     always_show_tool_result: bool = False
     custom_type: str | None = None
     details: dict[str, JSONValue] | None = None
@@ -118,7 +123,12 @@ class TuiState:
         if item.tool_name is not None and self.tool_call_renderer is not None:
             line = self.tool_call_renderer(item.tool_name, item.tool_arguments or {})
         if self.tool_spinner and item.tool_result_text is None:
-            return apply_tool_spinner(line if line is not None else item.text, self.tool_spinner)
+            line = apply_tool_spinner(line if line is not None else item.text, self.tool_spinner)
+            if item.started_at is not None:
+                elapsed = time.monotonic() - item.started_at
+                if elapsed >= TOOL_TIMER_MIN_SECONDS:
+                    line = f"{line} ({format_elapsed(elapsed)})"
+            return line
         return line
 
     def add_tool_call(self, tool_call: ToolCall) -> None:
@@ -138,6 +148,7 @@ class TuiState:
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
                 tool_arguments=tool_call.arguments,
+                started_at=time.monotonic(),
             )
         )
 
@@ -311,6 +322,18 @@ def _parse_compaction_summary_message(content: str) -> str | None:
     if content.startswith(prefix):
         return content.removeprefix(prefix)
     return None
+
+
+def format_elapsed(seconds: float) -> str:
+    """Format an elapsed duration tersely: 23s, 1m 23s, 1h 2m."""
+    total = int(seconds)
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m {secs}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes}m"
 
 
 def apply_tool_spinner(text: str, frame: str) -> str:
