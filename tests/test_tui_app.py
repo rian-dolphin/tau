@@ -90,7 +90,7 @@ from tau_coding.tui.config import (
     TuiSettings,
     tui_settings_path,
 )
-from tau_coding.tui.state import ChatItem, TuiState
+from tau_coding.tui.state import TOOL_SPINNER_FRAMES, ChatItem, TuiState
 from tau_coding.tui.widgets import (
     LeftAlignedMarkdownHeading,
     StreamingTranscriptMessageWidget,
@@ -2387,6 +2387,50 @@ async def test_render_call_line_composes_with_live_update_text() -> None:
         widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
         assert "▸ agent · Summarize codebase" in widget.selection_text
         assert "agent-1: bash · turn 1" in widget.selection_text
+
+
+@pytest.mark.anyio
+async def test_pending_tool_row_shows_spinner_while_running() -> None:
+    session = FakeSession()
+    session.extension_runtime = _RenderCallRuntime()
+    app = TauTuiApp(session)  # type: ignore[arg-type]
+
+    async def stream(event: AgentEvent) -> None:
+        app.adapter.apply(event)
+        await app._apply_streaming_transcript_event(event)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        app.state.running = True
+        await stream(
+            ToolExecutionStartEvent(
+                tool_call=ToolCall(
+                    id="call-1",
+                    name="agent",
+                    arguments={"prompt": "x", "description": "Summarize codebase"},
+                )
+            )
+        )
+        app._tick_activity()
+        await pilot.pause()
+
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
+        # The spinner frame stands in for the static ▸ marker while running.
+        assert widget.selection_text[0] in TOOL_SPINNER_FRAMES
+        assert "▸" not in widget.selection_text
+        assert "Summarize codebase" in widget.selection_text
+
+        # Once the result lands the static marker returns.
+        await stream(
+            ToolExecutionEndEvent(
+                result=AgentToolResult(
+                    tool_call_id="call-1", name="agent", ok=True, content="done"
+                )
+            )
+        )
+        await pilot.pause()
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
+        assert widget.selection_text.startswith("▸ agent · Summarize codebase")
 
 
 @pytest.mark.anyio

@@ -29,6 +29,9 @@ TOOL_RESULT_PREVIEW_LINES = 8
 TOOL_PATCH_PREVIEW_LINES = 32
 TOOL_RESULT_PREVIEW_CHARS = 2_000
 TERMINAL_COMMAND_OUTPUT_PREVIEW_LINES = 120
+TOOL_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+# Static invocation markers the spinner stands in for while a tool runs.
+_INVOCATION_MARKERS = ("→ ", "▸ ")
 
 
 @dataclass(slots=True)
@@ -62,6 +65,7 @@ class TuiState:
     skills: tuple[Skill, ...] = ()
     custom_renderer: CustomMessageMarkup | None = None
     tool_call_renderer: ToolCallMarkup | None = None
+    tool_spinner: str | None = None
 
     def add_item(
         self,
@@ -104,11 +108,18 @@ class TuiState:
         Resolved lazily at render time (like custom markup) so tool calls
         restored before the extension runtime connects still pick up their
         tool's `render_call` on the next redraw. ``None`` means "no renderer"
-        and the caller falls back to the generic ``item.text``.
+        and the caller falls back to the generic ``item.text``. While a tool
+        is still executing and ``tool_spinner`` is set, the current spinner
+        frame stands in for the invocation's static marker.
         """
-        if item.role != "tool" or item.tool_name is None or self.tool_call_renderer is None:
+        if item.role != "tool":
             return None
-        return self.tool_call_renderer(item.tool_name, item.tool_arguments or {})
+        line: str | None = None
+        if item.tool_name is not None and self.tool_call_renderer is not None:
+            line = self.tool_call_renderer(item.tool_name, item.tool_arguments or {})
+        if self.tool_spinner and item.tool_result_text is None:
+            return apply_tool_spinner(line if line is not None else item.text, self.tool_spinner)
+        return line
 
     def add_tool_call(self, tool_call: ToolCall) -> None:
         """Append a collapsed tool-call item."""
@@ -300,6 +311,14 @@ def _parse_compaction_summary_message(content: str) -> str | None:
     if content.startswith(prefix):
         return content.removeprefix(prefix)
     return None
+
+
+def apply_tool_spinner(text: str, frame: str) -> str:
+    """Show the spinner frame in place of a static invocation marker."""
+    for marker in _INVOCATION_MARKERS:
+        if text.startswith(marker):
+            return f"{frame} {text[len(marker):]}"
+    return f"{frame} {text}"
 
 
 def format_tool_call_block(tool_call: ToolCall) -> str:
