@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Sequence
+import traceback
+from collections.abc import AsyncIterator, Callable, Coroutine, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -2518,9 +2519,20 @@ class TauTuiApp(App[None]):
         # widgets so a reload/rebind can force-clear them and a crash can
         # quarantine them. Must exist before _connect_extension_runtime, which
         # clears them on every bind.
+        # `_extension_slot_widgets` holds the *intended* widget per key (the swap
+        # target, set synchronously); `_extension_slot_mounted` tracks what is
+        # actually mounted. A deferred remove() must fully drain before the next
+        # mount of the same-id widget, so slot/main-view swaps run on a serialized
+        # async continuation (see `_reconcile_slot`/`_reconcile_main_view`).
         self._extension_slot_widgets: dict[str, Widget] = {}
+        self._extension_slot_mounted: dict[str, Widget] = {}
+        self._extension_slot_slot_ids: dict[str, str] = {}
+        self._extension_slot_locks: dict[str, asyncio.Lock] = {}
         self._extension_key_interceptors: list[KeyInterceptor] = []
         self._extension_main_view: _MainViewHandle | None = None
+        self._extension_main_view_mounted: Widget | None = None
+        self._extension_main_view_lock = asyncio.Lock()
+        self._extension_swap_tasks: set[asyncio.Task[None]] = set()
         self._extension_component_failures_reported: set[str] = set()
         self._connect_extension_runtime(session)
         self._prompt_worker: Worker[None] | None = None
@@ -3037,31 +3049,82 @@ class TauTuiApp(App[None]):
                 )
         return False
 
+    def _schedule_extension_swap(self, coro: Coroutine[object, object, None]) -> None:
+        """Run a slot/main-view reconcile coroutine on the app loop.
+
+        The task is retained until it finishes so it cannot be garbage-collected
+        mid-flight (asyncio only holds a weak reference). If there is no running
+        loop (only possible outside a live TUI), the coroutine is closed rather
+        than left un-awaited.
+        """
+        try:
+            task = asyncio.ensure_future(coro)
+        except RuntimeError:  # no running loop — not a live TUI
+            coro.close()
+            return
+        self._extension_swap_tasks.add(task)
+        task.add_done_callback(self._extension_swap_tasks.discard)
+
     def _set_extension_slot_widget(
         self,
         key: str,
         factory: SlotWidgetFactory | None,
         placement: Placement,
     ) -> None:
-        """Mount ``factory(theme)`` into a prompt-adjacent slot, or unmount it."""
-        existing = self._extension_slot_widgets.pop(key, None)
-        if existing is not None:
-            with suppress(Exception):
-                existing.remove()
-        if factory is None:
-            return
-        try:
-            widget = factory(self.tui_settings.resolved_theme)
-        except Exception as exc:  # noqa: BLE001 - isolation boundary
-            self._record_extension_component_failure(f"slot:{key}", exc, notify=True)
-            return
+        """Mount ``factory(theme)`` into a prompt-adjacent slot, or unmount it.
+
+        The intended widget is recorded synchronously so mid-swap reads (clear,
+        quarantine, refresh) see what *should* occupy the slot; the actual
+        mount/unmount runs on a serialized continuation so a deferred remove()
+        of a same-id widget fully drains before the replacement mounts (else the
+        DOM briefly holds two widgets with one id -> ``DuplicateIds``).
+        """
+        new_widget: Widget | None = None
+        if factory is not None:
+            try:
+                new_widget = factory(self.tui_settings.resolved_theme)
+            except Exception as exc:  # noqa: BLE001 - isolation boundary
+                self._record_extension_component_failure(f"slot:{key}", exc, notify=True)
+                return
         slot_id = "above-prompt-slot" if placement == "above_prompt" else "below-prompt-slot"
-        try:
-            self.query_one(f"#{slot_id}", Container).mount(widget)
-        except Exception as exc:  # noqa: BLE001 - isolation boundary
-            self._record_extension_component_failure(f"slot:{key}", exc, notify=True)
-            return
-        self._extension_slot_widgets[key] = widget
+        if new_widget is None:
+            self._extension_slot_widgets.pop(key, None)
+            self._extension_slot_slot_ids.pop(key, None)
+        else:
+            self._extension_slot_widgets[key] = new_widget
+            self._extension_slot_slot_ids[key] = slot_id
+        self._schedule_extension_swap(self._reconcile_slot(key))
+
+    async def _reconcile_slot(self, key: str) -> None:
+        """Make the mounted slot widget match the intended target (serialized).
+
+        Reads the *live* target each time (not a snapshot), so a burst of set
+        calls collapses to "last writer wins": the first continuation removes the
+        stale mount, later ones find the target already satisfied and no-op.
+        """
+        lock = self._extension_slot_locks.setdefault(key, asyncio.Lock())
+        async with lock:
+            target = self._extension_slot_widgets.get(key)
+            mounted = self._extension_slot_mounted.get(key)
+            if mounted is not None and mounted is not target:
+                with suppress(Exception):
+                    await mounted.remove()
+                if self._extension_slot_mounted.get(key) is mounted:
+                    self._extension_slot_mounted.pop(key, None)
+            # Re-read after the await; the target may have changed meanwhile.
+            target = self._extension_slot_widgets.get(key)
+            if target is None or self._extension_slot_mounted.get(key) is target:
+                return
+            slot_id = self._extension_slot_slot_ids.get(key, "below-prompt-slot")
+            try:
+                self.query_one(f"#{slot_id}", Container).mount(target)
+            except Exception as exc:  # noqa: BLE001 - isolation boundary
+                if self._extension_slot_widgets.get(key) is target:
+                    self._extension_slot_widgets.pop(key, None)
+                    self._extension_slot_slot_ids.pop(key, None)
+                self._record_extension_component_failure(f"slot:{key}", exc, notify=True)
+                return
+            self._extension_slot_mounted[key] = target
 
     def _open_extension_main_view(self, factory: MainViewFactory) -> MainViewHandle:
         """Open a display-toggled main-area view mounting ``factory(handle, theme)``.
@@ -3069,9 +3132,13 @@ class TauTuiApp(App[None]):
         Prompt focus is intentionally left where it is (the extension widget can
         focus its own composer), so a registered key interceptor keeps firing
         while the prompt is focused and can close the view on Esc.
+
+        The handle is returned synchronously (the factory needs it and callers
+        store it at once), but the mount is sequenced after any previous view's
+        remove() drains, so switching views never collides on the shared main
+        slot. ``is_open`` reports the *intended* state: the new handle is open
+        the instant it is returned even though its widget mounts a tick later.
         """
-        if self._extension_main_view is not None:
-            self._extension_main_view.close()
         handle = _MainViewHandle(self)
         try:
             widget = factory(handle, self.tui_settings.resolved_theme)
@@ -3079,26 +3146,60 @@ class TauTuiApp(App[None]):
             self._record_extension_component_failure("main_view", exc, notify=True)
             return _DeadMainViewHandle()
         handle.widget = widget
-        try:
-            slot = self.query_one("#main-slot", Container)
-            slot.mount(widget)
-        except Exception as exc:  # noqa: BLE001 - isolation boundary
-            self._record_extension_component_failure("main_view", exc, notify=True)
-            return _DeadMainViewHandle()
+        previous = self._extension_main_view
+        if previous is not None and previous is not handle:
+            # Superseded: its close() becomes a no-op so a stale Esc/unmount can't
+            # tear down the view that replaced it.
+            previous._open = False
         self._extension_main_view = handle
-        with suppress(NoMatches):
-            self.query_one("#transcript", TranscriptView).display = False
-        slot.display = True
+        self._schedule_extension_swap(self._reconcile_main_view())
         return handle
 
+    async def _reconcile_main_view(self) -> None:
+        """Make the mounted main view match the intended handle (serialized)."""
+        async with self._extension_main_view_lock:
+            target = self._extension_main_view
+            target_widget = target.widget if target is not None else None
+            mounted = self._extension_main_view_mounted
+            if mounted is not None and mounted is not target_widget:
+                with suppress(Exception):
+                    await mounted.remove()
+                if self._extension_main_view_mounted is mounted:
+                    self._extension_main_view_mounted = None
+            # Re-read after the await.
+            target = self._extension_main_view
+            target_widget = target.widget if target is not None else None
+            if target_widget is not None and self._extension_main_view_mounted is not target_widget:
+                try:
+                    slot = self.query_one("#main-slot", Container)
+                    slot.mount(target_widget)
+                except Exception as exc:  # noqa: BLE001 - isolation boundary
+                    if self._extension_main_view is target:
+                        self._extension_main_view = None
+                    if target is not None:
+                        target._open = False
+                    self._record_extension_component_failure("main_view", exc, notify=True)
+                    self._restore_main_transcript()
+                    return
+                self._extension_main_view_mounted = target_widget
+                with suppress(NoMatches):
+                    self.query_one("#transcript", TranscriptView).display = False
+                slot.display = True
+            elif self._extension_main_view is None and self._extension_main_view_mounted is None:
+                # A close (target cleared) with nothing left to show.
+                self._restore_main_transcript()
+
     def _close_extension_main_view(self, handle: _MainViewHandle) -> None:
-        """Unmount a main view and restore the main transcript."""
+        """Unmount a main view and restore the main transcript (sequenced)."""
         if self._extension_main_view is not handle:
             return
         self._extension_main_view = None
-        if handle.widget is not None:
-            with suppress(Exception):
-                handle.widget.remove()
+        self._schedule_extension_swap(self._reconcile_main_view())
+
+    def _restore_main_transcript(self) -> None:
+        """Hide the main slot and bring the main transcript back into focus."""
+        if not self.screen_stack:
+            return
         with suppress(NoMatches):
             self.query_one("#main-slot", Container).display = False
         with suppress(NoMatches):
@@ -3125,21 +3226,56 @@ class TauTuiApp(App[None]):
 
         Called before installing a new UI bridge (rebind / resume) and on
         teardown so a leaked extension widget never survives a session switch.
+        Both the intended targets and the actually-mounted widgets are removed;
+        any in-flight swap continuation then sees empty state and no-ops.
         """
-        for widget in tuple(self._extension_slot_widgets.values()):
+        removed: set[int] = set()
+        for widget in (
+            *self._extension_slot_widgets.values(),
+            *self._extension_slot_mounted.values(),
+        ):
+            if id(widget) in removed:
+                continue
+            removed.add(id(widget))
             with suppress(Exception):
                 widget.remove()
         self._extension_slot_widgets.clear()
-        if self._extension_main_view is not None:
-            self._extension_main_view.close()
+        self._extension_slot_mounted.clear()
+        self._extension_slot_slot_ids.clear()
+        handle = self._extension_main_view
+        self._extension_main_view = None
+        if handle is not None:
+            handle._open = False
+        mounted = self._extension_main_view_mounted
+        self._extension_main_view_mounted = None
+        for widget in (handle.widget if handle is not None else None, mounted):
+            if widget is not None and id(widget) not in removed:
+                removed.add(id(widget))
+                with suppress(Exception):
+                    widget.remove()
+        self._restore_main_transcript()
         self._extension_key_interceptors.clear()
 
     def _tracked_extension_widgets(self) -> tuple[Widget, ...]:
-        """Return every extension widget the host currently has mounted."""
-        widgets = list(self._extension_slot_widgets.values())
+        """Return every extension widget the host currently tracks (intended or mounted)."""
+        widgets: list[Widget] = []
+        seen: set[int] = set()
+        for widget in (
+            *self._extension_slot_widgets.values(),
+            *self._extension_slot_mounted.values(),
+        ):
+            if id(widget) not in seen:
+                seen.add(id(widget))
+                widgets.append(widget)
         handle = self._extension_main_view
-        if handle is not None and handle.widget is not None:
-            widgets.append(handle.widget)
+        main_widgets = (
+            handle.widget if handle is not None else None,
+            self._extension_main_view_mounted,
+        )
+        for widget in main_widgets:
+            if widget is not None and id(widget) not in seen:
+                seen.add(id(widget))
+                widgets.append(widget)
         return tuple(widgets)
 
     def _extension_root_for(
@@ -3187,15 +3323,21 @@ class TauTuiApp(App[None]):
             culprit.display = False
         with suppress(Exception):
             culprit.disabled = True
-        if self._extension_main_view is not None and self._extension_main_view.widget is culprit:
-            self._extension_main_view.close()
+        if (
+            self._extension_main_view is not None
+            and self._extension_main_view.widget is culprit
+        ) or self._extension_main_view_mounted is culprit:
+            if self._extension_main_view_mounted is culprit:
+                self._extension_main_view_mounted = None
+            self._extension_main_view = None
+            with suppress(Exception):
+                culprit.remove()
+            self._restore_main_transcript()
         else:
-            key = next(
-                (k for k, w in self._extension_slot_widgets.items() if w is culprit),
-                None,
-            )
-            if key is not None:
-                self._extension_slot_widgets.pop(key, None)
+            for tracker in (self._extension_slot_widgets, self._extension_slot_mounted):
+                key = next((k for k, w in tracker.items() if w is culprit), None)
+                if key is not None:
+                    tracker.pop(key, None)
             with suppress(Exception):
                 culprit.remove()
         self._record_extension_component_failure(
@@ -3220,13 +3362,31 @@ class TauTuiApp(App[None]):
     def _record_extension_component_failure(
         self, context: str, error: BaseException, *, notify: bool = False
     ) -> None:
-        """Diagnose an extension-component failure once per context."""
+        """Diagnose an extension-component failure once per context.
+
+        The notification carries a short exception summary so the failure is
+        identifiable at a glance; the full traceback goes to the app log for a
+        post-mortem (the two together are what let us pin the deferred-remove
+        ``DuplicateIds`` race).
+        """
+        # Always log the traceback, even on a duplicate context, so a repeating
+        # failure leaves a full trail.
+        with suppress(Exception):
+            self.log.error(
+                f"Extension component failed ({context}):\n"
+                + "".join(
+                    traceback.format_exception(type(error), error, error.__traceback__)
+                )
+            )
         if context in self._extension_component_failures_reported:
             return
         self._extension_component_failures_reported.add(context)
         if notify:
+            summary = f"{type(error).__name__}: {error}"
+            if len(summary) > 120:
+                summary = summary[:117] + "..."
             self._notify(
-                f"An extension component failed ({context}) and was removed.",
+                f"An extension component failed ({context}) and was removed ({summary}).",
                 severity="error",
             )
 

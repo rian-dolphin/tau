@@ -454,6 +454,41 @@ runtime's existing "swallow + diagnose once" discipline (runtime.py
 4. **Dispose / unmount** — all teardown runs under `contextlib.suppress` +
    diagnostic, so a throwing `dispose` cannot block reload.
 
+> **Implementation note (post-experiment bug fix 2):** two user-reported crashes
+> traced to the same seam race — a slot/main-view *replacement* mounted the new
+> widget synchronously while the old widget's `Widget.remove()` was still
+> deferred (`AwaitableRemove` had not drained). For a beat the DOM held two
+> widgets sharing one id (`subagents-conversation-viewer` / the strip's id) →
+> `DuplicateIds` at mount → the swap was recorded as a component failure and the
+> handle/strip was lost. It fired when opening a second agent's viewer while one
+> was open, and on a same-tick extension teardown+reinstall (session rebind:
+> `/reload`, `/new`, `/resume` — `session_shutdown` always precedes the next
+> `session_start`, so the extension tears its strip down then remounts a same-id
+> strip in one turn). Fix: `_set_extension_slot_widget` and
+> `_open_extension_main_view` now record the *intended* widget synchronously
+> (`_extension_slot_widgets` / `_extension_main_view` are the target, so mid-swap
+> reads by clear/quarantine/refresh stay coherent, and `handle.is_open` reports
+> the intended state the instant it is returned) and hand the actual mount to a
+> serialized async continuation (`_reconcile_slot` / `_reconcile_main_view`, each
+> under a lock) that first `await`s the outgoing widget's removal, then re-reads
+> the live target and mounts only if it is still the winner. A burst (rapid
+> A→B→C) collapses to last-writer-wins with no orphaned widgets, and a widget
+> quarantined between schedule and continuation is dropped from both the target
+> and mounted trackers so the continuation no-ops. `_record_extension_component_
+> failure` also now carries a truncated `Type: message` summary in the
+> notification and logs the full traceback via `self.log.error` (that trail is
+> what pinned the race).
+>
+> The same fix unblocked the extension's interceptor-while-viewer-open model
+> (bug 2): the controller's key interceptor used to yield entirely while a viewer
+> was open, so once a viewer was up the fleet strip was unreachable (the only
+> exit was Esc *with the viewer focused*). It now stays active while a viewer is
+> open — except while the steer composer owns the keyboard (a new
+> `ConversationViewer.composer_active` property gates it) — with `left`
+> re-activating strip nav (not `down`, which the focused viewer uses to scroll),
+> `enter` on `main` closing the viewer via its handle, and `enter` on another
+> agent switching the viewer (now race-safe thanks to the sequenced swap above).
+
 ---
 
 ## 3. Core removal list

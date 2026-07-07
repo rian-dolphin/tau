@@ -93,6 +93,120 @@ async def test_component_second_main_view_replaces_first() -> None:
 
 
 @pytest.mark.anyio
+async def test_component_slot_replace_same_id_same_tick_no_duplicate() -> None:
+    """Replacing a slot widget with a same-id widget in one tick must sequence.
+
+    The old widget's ``remove()`` is deferred; mounting the replacement before it
+    drains would leave two widgets sharing an id (``DuplicateIds``). The swap
+    must await the removal, so exactly one widget survives with no failure.
+    """
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("k", lambda theme: Static("one", id="dup-slot"))
+        await pilot.pause()
+        # Same tick: unmount then re-register the SAME id (the reload analog).
+        bridge.set_slot_widget("k", None)
+        bridge.set_slot_widget("k", lambda theme: Static("two", id="dup-slot"))
+        await pilot.pause()
+        await pilot.pause()
+
+        slot = app.query_one("#below-prompt-slot", Container)
+        assert len(slot.query("#dup-slot")) == 1
+        assert app._extension_component_failures_reported == set()
+        assert app._extension_slot_mounted["k"] is app._extension_slot_widgets["k"]
+
+
+@pytest.mark.anyio
+async def test_component_slot_rapid_a_b_c_last_wins() -> None:
+    """Three same-id slot swaps in one tick collapse to the last, no duplicates."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        made: dict[str, Static] = {}
+
+        def factory(label: str):  # noqa: ANN202
+            def build(theme):  # noqa: ANN001, ANN202
+                widget = made[label] = Static(label, id="abc-slot")
+                return widget
+
+            return build
+
+        bridge.set_slot_widget("k", factory("pre"))
+        await pilot.pause()
+        bridge.set_slot_widget("k", factory("A"))
+        bridge.set_slot_widget("k", factory("B"))
+        bridge.set_slot_widget("k", factory("C"))
+        await pilot.pause()
+        await pilot.pause()
+
+        slot = app.query_one("#below-prompt-slot", Container)
+        surviving = slot.query("#abc-slot")
+        assert len(surviving) == 1
+        assert surviving.first() is made["C"]
+        assert app._extension_component_failures_reported == set()
+
+
+@pytest.mark.anyio
+async def test_component_second_main_view_same_id_no_duplicate() -> None:
+    """Opening a second same-id main view while one is open must not collide."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.open_main_view(lambda handle, theme: Static("one", id="dup-view"))
+        await pilot.pause()
+        # A second view sharing the viewer id, opened before the first drains.
+        second = bridge.open_main_view(
+            lambda handle, theme: Static("two", id="dup-view")
+        )
+        await pilot.pause()
+        await pilot.pause()
+
+        slot = app.query_one("#main-slot", Container)
+        assert len(slot.query("#dup-view")) == 1
+        assert app._extension_main_view is second
+        assert app._extension_main_view_mounted is second.widget
+        assert app._extension_component_failures_reported == set()
+
+
+@pytest.mark.anyio
+async def test_component_main_view_rapid_a_b_c_last_wins() -> None:
+    """Three same-id main-view opens in one tick mount exactly the last one."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.open_main_view(lambda handle, theme: Static("pre", id="abc-view"))
+        await pilot.pause()
+        a = bridge.open_main_view(lambda handle, theme: Static("A", id="abc-view"))
+        b = bridge.open_main_view(lambda handle, theme: Static("B", id="abc-view"))
+        c = bridge.open_main_view(lambda handle, theme: Static("C", id="abc-view"))
+        await pilot.pause()
+        await pilot.pause()
+
+        slot = app.query_one("#main-slot", Container)
+        surviving = slot.query("#abc-view")
+        assert len(surviving) == 1
+        assert surviving.first() is c.widget
+        assert app._extension_main_view is c
+        assert not a.is_open
+        assert not b.is_open
+        assert c.is_open
+        assert app._extension_component_failures_reported == set()
+
+
+@pytest.mark.anyio
 async def test_component_host_exception_is_not_swallowed() -> None:
     app = TauTuiApp(FakeSession())
 
