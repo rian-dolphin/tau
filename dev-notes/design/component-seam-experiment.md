@@ -1,10 +1,13 @@
 # Component-seam experiment: extension-owned agent UI
 
 **Status:** implemented through Step 3 on branch `component-seam-experiment` (both
-repos). Core adds the generic component seam and has fully removed the old
-transcript-source seam (§3); the `tau-subagents` extension owns the entire agent
-UI via `ComponentBridge`. Both suites green (core 796, extension 103). Measured
-outcome recorded in §8. This is the deliberate other-path exploration of
+repos), plus post-experiment fixes: the pre-dispatch interceptor relocation
+(§2e implementation note) and the sequenced slot/main-view swaps (§2f
+implementation note, bug fix 2). Core adds the generic component seam and has
+fully removed the old transcript-source seam (§3); the `tau-subagents`
+extension owns the entire agent UI via `ComponentBridge`. Both suites green
+(core 802, extension 116). Measured outcome recorded in §8 (updated after the
+fix commits). This is the deliberate other-path exploration of
 the phase-21 strings-not-widgets Ruling (`phase-21-extensions.md` L416–442). The
 Ruling's reopen triggers and the "preferred middle ground" (a declarative UI
 layer) are unchanged; this branch instead tests the raw-widget seam so we can
@@ -799,12 +802,12 @@ check (retained here, but it is redundant once listeners exist).
 
 ## 8. Measured outcome
 
-The §7 LoC deltas were estimates. Here are the real numbers after Steps 1–3
-landed on this branch, measured against the pre-experiment baseline
-(`subagents-integration`).
+The §7 LoC deltas were estimates. Here are the real numbers, measured against
+the pre-experiment baseline (`subagents-integration`) — first as of Step 3,
+then updated after the post-experiment fix commits.
 
-**Core source (`src/` only), whole experiment** —
-`git diff --stat subagents-integration..HEAD -- src/`:
+**Core source (`src/` only), as of Step 3 (`c291557`)** —
+`git diff --stat subagents-integration..c291557 -- src/`:
 
 ```
  src/tau_coding/extensions/__init__.py |  20 +-
@@ -814,28 +817,50 @@ landed on this branch, measured against the pre-experiment baseline
  4 files changed, 568 insertions(+), 529 deletions(-)
 ```
 
-- **Net core src: +39 lines** (568 inserted, 529 deleted).
+- **Net core src at Step 3: +39 lines** (568 inserted, 529 deleted).
 - Of that, **Step 3 alone removed a net 585 src lines** (6 inserted, 591
   deleted) — the old transcript-source seam plus the entire host-side agents
   strip / in-place view / steer machinery in `app.py`.
 - So Steps 1–2 (adding the component seam) added ~624 net src lines, and Step 3
   (removing the old seam) gave ~585 back.
 
-**The estimate was wrong in sign.** §7 predicted "roughly **−200 non-test
-LoC** — core does get smaller." Measured, core src grew by **+39 lines** net.
-The component seam (`ComponentBridge` + slot/main-view mounting + the
-in-tree main view + interceptor registry + the `_handle_exception` quarantine
-guard + Null/Stderr no-ops) is *larger* than the transcript-source seam it
-replaced — the guard/quarantine and main-view plumbing in particular cost more
-than the estimate allowed. The honest headline stands but flips: core did
-**not** get smaller in LoC. It traded a small, data-only, frontend-portable seam
-for a larger, Textual-coupled one — heavier in both contract weight (§7) *and*
-line count.
+**Updated after the post-experiment fixes** (`5f8a78f` pre-dispatch
+interceptors, `ff55f54` sequenced swaps) —
+`git diff --stat subagents-integration..HEAD -- src/`:
 
-**Test counts (final, both repos green):**
-- Core: **796 passing** (was 808 pre-Step-3; Step 3 deleted 9 strip/view pilot
+```
+ src/tau_coding/extensions/__init__.py |  20 +-
+ src/tau_coding/extensions/api.py      | 264 +++++++--
+ src/tau_coding/extensions/runtime.py  |  53 --
+ src/tau_coding/tui/app.py             | 972 +++++++++++++++++++---------------
+ 4 files changed, 778 insertions(+), 531 deletions(-)
+```
+
+- **Net core src now: +247 lines** (778 inserted, 531 deleted). The two fix
+  commits — moving the interceptor consult to a true pre-dispatch
+  `TauTuiApp.on_event` hook, and serializing slot/main-view swaps behind locks
+  so a deferred remove drains before the same-id replacement mounts — cost a
+  further ~208 net src lines. Both were bugs the experiment had to fix to be
+  usable, so they belong in the honest total.
+
+**The estimate was wrong in sign.** §7 predicted "roughly **−200 non-test
+LoC** — core does get smaller." Measured, core src grew by **+39 lines** net at
+Step 3 and **+247 lines** with the correctness fixes in. The component seam
+(`ComponentBridge` + slot/main-view mounting + the in-tree main view +
+interceptor registry + the `_handle_exception` quarantine guard + the sequenced
+swap machinery + Null/Stderr no-ops) is *larger* than the transcript-source
+seam it replaced — the guard/quarantine, main-view plumbing, and swap
+sequencing in particular cost more than the estimate allowed. The honest
+headline stands but flips: core did **not** get smaller in LoC. It traded a
+small, data-only, frontend-portable seam for a larger, Textual-coupled one —
+heavier in both contract weight (§7) *and* line count.
+
+**Test counts (current, both repos green):**
+- Core: **802 passing** (796 at Step 3 — Step 3 deleted 9 strip/view pilot
   tests from `test_tui_app.py`, 3 transcript-source runtime tests from
   `test_extensions.py`, and replaced the legacy-coexistence component test with
-  a plain open→close restore-`#transcript` test — net −12).
-- Extension (`tau-subagents`): **103 passing** — unchanged by Step 3, since the
-  extension was already fully migrated off the old seam in Step 2.
+  a plain open→close restore-`#transcript` test, net −12 from the pre-Step-3
+  808; the fix commits then added 6 interceptor/swap pilot tests).
+- Extension (`tau-subagents`): **116 passing** (103 at Step 3; the fix-commit
+  batches added the nav-while-viewer-open, rapid-switch, rebind, and
+  quiet-rows tests).

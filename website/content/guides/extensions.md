@@ -233,16 +233,20 @@ def setup(tau):
         return  # print mode / older host: stay widget-less but functional
 
     # A persistent widget above or below the prompt. The factory runs on the UI
-    # thread and receives the live theme (re-invoked on theme change).
+    # thread and receives the live theme.
     def build_strip(theme):
         return MyStripWidget(theme)          # a textual.widget.Widget
 
     components.set_slot_widget("my-widget", build_strip, placement="below_prompt")
     # set_slot_widget("my-widget", None) removes it again.
 
-    # A pre-editor key hook (ports Pi's onTerminalInput): it sees keys before
-    # the prompt editor and app bindings, so returning True for "escape"
-    # preempts the turn-cancel. Self-gate on the prompt text (empty-prompt nav).
+    # A pre-dispatch key hook (ports Pi's onTerminalInput): it is consulted
+    # before the host's app-level priority bindings AND before the focused
+    # widget, so returning True for "escape" preempts the turn-cancel and
+    # returning True for "down" preempts completion nav. It fires for EVERY
+    # main-screen key regardless of which widget has focus (never while a
+    # modal dialog/picker is on top), so it MUST self-gate — e.g. on the
+    # prompt text — and return True only for keys it actually consumes.
     def on_key(event, prompt_text):
         if prompt_text == "" and event.key == "down":
             ...            # activate your widget
@@ -260,12 +264,15 @@ def setup(tau):
   **not** a modal screen), so your slot widgets stay visible and the prompt
   keeps focus — embed your own composer if you want one. `handle.close()`
   restores the transcript; `handle.is_open` reports its state.
-- `register_key_interceptor(handler) -> unsubscribe` — return `True` to consume
-  a key. A raising interceptor is treated as "not consumed".
+- `register_key_interceptor(handler) -> unsubscribe` — `handler(event,
+  prompt_text)`; return `True` to consume a key. Pre-dispatch: consulted ahead
+  of the host's priority bindings and the focused widget, for every main-screen
+  key (never while a modal is on top) — self-gate accordingly. A raising
+  interceptor is treated as "not consumed".
 - `theme` is the live `TuiTheme`; `get_prompt_text()` reads the prompt editor
-  (for interceptor gating); `request_render()` re-renders your mounted widgets.
-  Push live updates by calling your widget's own `refresh()` (Textual) — the
-  seam does not poll.
+  (interceptors already receive it as their second argument);
+  `request_render()` re-renders your mounted widgets. Push live updates by
+  calling your widget's own `refresh()` (Textual) — the seam does not poll.
 
 The host is defensive: a factory that raises, a widget that crashes in
 `render`/`on_mount`, or a throwing interceptor is isolated (quarantined and

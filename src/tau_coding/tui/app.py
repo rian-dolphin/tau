@@ -249,7 +249,11 @@ class _TuiExtensionUiBridge:
         return self._app.tui_settings.resolved_theme
 
     def get_prompt_text(self) -> str:
-        """Return the current prompt-editor text (for interceptor gating)."""
+        """Return the current prompt-editor text (Pi's getEditorText).
+
+        Interceptors do not need this — the host passes the prompt text as
+        their second argument; it exists for reads outside the key path.
+        """
         return self._app._current_prompt_text()
 
     def request_render(self) -> None:

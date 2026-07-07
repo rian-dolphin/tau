@@ -94,12 +94,12 @@ ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
 
 # --- component seam (experimental) -----------------------------------------
 # Widget-hosting capability that lets an extension mount its own Textual widgets
-# into host-owned slots and a main-area view, and intercept keys before the
-# prompt editor. This is the deliberately Textual-coupled seam explored on the
-# component-seam-experiment branch: the "component" type is Textual's own
-# ``Widget`` (referenced only under TYPE_CHECKING so print-mode stays
-# import-clean). Marked experimental; the older transcript-source seam still
-# coexists with it.
+# into host-owned slots and a main-area view, and intercept keys pre-dispatch
+# (before the host's priority bindings and the focused widget). This is the
+# deliberately Textual-coupled seam explored on the component-seam-experiment
+# branch: the "component" type is Textual's own ``Widget`` (referenced only
+# under TYPE_CHECKING so print-mode stays import-clean). Marked experimental;
+# it replaced the older transcript-source seam, which Step 3 removed from core.
 
 Placement = Literal["above_prompt", "below_prompt"]
 
@@ -109,9 +109,10 @@ SlotWidgetFactory = Callable[["TuiTheme"], "Widget"]
 # The main-view factory also receives the handle so the widget can close itself.
 MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
 
-# Pre-editor key hook (ports Pi's ``onTerminalInput``). Returns True to consume
-# the key. The host passes the Textual ``Key`` event and the current prompt text
-# so the handler can self-gate (Pi gates on ``getEditorText() === ""``).
+# Pre-dispatch key hook (ports Pi's ``onTerminalInput``). Returns True to
+# consume the key. Fires for every main-screen key regardless of focus; the host
+# passes the Textual ``Key`` event and the current prompt text so the handler
+# can self-gate (Pi gates on ``getEditorText() === ""``).
 KeyInterceptor = Callable[["events.Key", str], bool]
 
 
@@ -166,7 +167,11 @@ class ComponentBridge(Protocol):
         ...
 
     def get_prompt_text(self) -> str:
-        """Return the current prompt-editor text (for key-interceptor gating)."""
+        """Return the current prompt-editor text (Pi's getEditorText).
+
+        Key interceptors receive the prompt text as their second argument;
+        this is for reads outside the key path.
+        """
         ...
 
     def request_render(self) -> None:
