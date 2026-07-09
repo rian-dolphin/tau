@@ -42,8 +42,12 @@ are called out inline as **Ruling:** notes.
 
   **Implemented since:** custom **message** renderers
   (`register_message_renderer` + `send_custom_message`) — the subset of Pi's
-  renderer surface that formats messages which *do* participate in LLM context.
-  See "Custom message rendering" below. Extension-authored widgets and custom
+  renderer surface that formats messages which *do* participate in LLM context
+  (see "Custom message rendering" below) — and extension-authored **component
+  widgets** (`context.ui.components`: slot widgets, a main-area view, and
+  pre-dispatch key interceptors), adopted as the committed design via the
+  component-seam experiment (see the superseding Ruling under "Custom message
+  rendering" and `dev-notes/design/component-seam-experiment.md`). Custom
   entry renderers remain out of scope.
 
 When any of these lands, design it from Pi's implementation first
@@ -458,6 +462,24 @@ widgets: a **declarative UI layer** (extensions emit structured component
 descriptions — block-kit style — that the host renders), which widens
 expressiveness while preserving toolkit independence; design it from Pi's
 `ctx.ui` surface first, per the porting rule above.
+
+**Ruling (superseded 2026-07-09 — component seam adopted):** reopen trigger
+(b) fired in practice. Keeping the subagent UX host-side against data seams
+forced agent vocabulary and agent UI *into* core (the agents strip and
+in-place viewer lived in `tui/app.py`), which defeats the point of an
+extension system. The `component-seam-experiment` branch then implemented the
+raw-widget path end-to-end — the tau-subagents extension owns its entire UI
+through `ComponentBridge` — and measured the cost the Ruling above predicted
+(`component-seam-experiment.md` §8: core src grew ~+250 lines and the public
+contract got heavier; the prediction held and is accepted). Decision: the
+component seam is the **committed design**, not an experiment. The component
+type is Textual's `Widget`; the coupling is owned deliberately — extensions
+build against the Textual version tau pins, and a Textual major bump is a
+coordinated break for core and extensions together. Strings remain the
+preferred form wherever they suffice (message renderers, tool-call/result
+renderers, string-list slot widgets — all frontend-portable and print-safe);
+widgets are for extensions that need live, interactive UI. The declarative
+middle ground stays available as a future *addition*, not a replacement.
 
 **Ruling:** `custom_type`/`details` ride on **`UserMessage` metadata** rather
 than a separate `custom` message role (deviation from Pi's `CustomMessageEntry`

@@ -6365,7 +6365,7 @@ class _FakeSessionManager:
         return self._records
 
 
-# --- component seam (experimental) pilot tests -----------------------------
+# --- component seam pilot tests ---------------------------------------------
 # These drive the generic widget-hosting seam on the real TauTuiApp via the
 # host bridge, using an in-test caller with no subagents vocabulary. The legacy
 # agents-strip pilot tests they once coexisted with were deleted in Step 3

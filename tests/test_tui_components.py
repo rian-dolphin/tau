@@ -1,4 +1,4 @@
-"""Focused tests for the experimental component (widget-hosting) seam.
+"""Focused tests for the component (widget-hosting) seam.
 
 These drive the generic seam on the real ``TauTuiApp`` via the host bridge,
 reusing the fakes/helpers that already back the broader TUI suite in

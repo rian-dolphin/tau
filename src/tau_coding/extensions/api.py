@@ -98,14 +98,16 @@ ToolCallMarkup = Callable[[str, "Mapping[str, JSONValue]"], "str | None"]
 # are swallowed by the resolver, never raised into the frontend.
 ToolResultMarkup = Callable[[AgentToolResult, bool], "str | None"]
 
-# --- component seam (experimental) -----------------------------------------
+# --- component seam ---------------------------------------------------------
 # Widget-hosting capability that lets an extension mount its own Textual widgets
 # into host-owned slots and a main-area view, and intercept keys pre-dispatch
-# (before the host's priority bindings and the focused widget). This is the
-# deliberately Textual-coupled seam explored on the component-seam-experiment
-# branch: the "component" type is Textual's own ``Widget`` (referenced only
-# under TYPE_CHECKING so print-mode stays import-clean). Marked experimental;
-# it replaced the older transcript-source seam, which Step 3 removed from core.
+# (before the host's priority bindings and the focused widget). The "component"
+# type is Textual's own ``Widget`` (referenced only under TYPE_CHECKING so
+# print-mode stays import-clean): Textual is deliberately part of the public
+# extension contract. Extensions build against the Textual version tau pins; a
+# Textual major bump is a coordinated break for core and extensions together.
+# History and measured trade-offs: dev-notes/design/component-seam-experiment.md.
+# It replaced the older transcript-source seam, which Step 3 removed from core.
 
 Placement = Literal["above_prompt", "below_prompt"]
 
@@ -462,7 +464,7 @@ class UiBridge(Protocol):
         """Show a text prompt; return the entered text, or None on cancel."""
         ...
 
-    # -- component seam (experimental) -- see ComponentBridge for docs --------
+    # -- component seam -- see ComponentBridge for docs -----------------------
 
     @property
     def supports_components(self) -> bool:
@@ -565,7 +567,7 @@ class NullUiBridge:
         """Return None: no UI to enter text into (Pi no-op default)."""
         return None
 
-    # -- component seam (experimental) ---------------------------------------
+    # -- component seam -------------------------------------------------------
 
     @property
     def supports_components(self) -> bool:
@@ -683,7 +685,7 @@ class ExtensionUi:
 
     @property
     def components(self) -> ComponentBridge:
-        """Return the host widget-hosting capability (experimental).
+        """Return the host widget-hosting capability.
 
         Straight pass-through to the installed UI bridge, which implements the
         :class:`ComponentBridge` members (the TUI hosts real widgets; the

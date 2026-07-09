@@ -1,5 +1,16 @@
 # Component-seam experiment: extension-owned agent UI
 
+**Decision (2026-07-09): adopted — this is the committed design, no longer an
+experiment.** Extensions need real control over the UI to be useful, and this
+seam carried the full subagents UX in practice. The measured costs in §8 are
+accepted and recorded: core grew rather than shrank, and Textual is now
+deliberately part of the public extension contract (extensions build against
+the Textual version tau pins; a Textual major bump is a coordinated break for
+core and extensions together). The phase-21 strings-not-widgets Ruling is
+superseded (see the follow-up Ruling in `phase-21-extensions.md`); strings
+remain the preferred form wherever they suffice. Everything below is preserved
+as the historical record of how the decision was made.
+
 **Status:** implemented through Step 3 on branch `component-seam-experiment` (both
 repos), plus post-experiment fixes: the pre-dispatch interceptor relocation
 (§2e implementation note) and the sequenced slot/main-view swaps (§2f

@@ -1115,7 +1115,7 @@ class RecordingUiBridge:
     def has_ui(self) -> bool:
         return self._has_ui
 
-    # -- component seam (experimental) ---------------------------------------
+    # -- component seam -------------------------------------------------------
 
     @property
     def supports_components(self) -> bool:

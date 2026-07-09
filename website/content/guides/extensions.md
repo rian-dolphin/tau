@@ -212,15 +212,18 @@ The task runs on the same event loop as the session, so awaiting the dialog
 there is safe. (A tool executor, which is already `async`, can `await
 tau.context.ui...` directly.)
 
-### Component widgets (experimental)
+### Component widgets
 
-> **Experimental.** This seam lets an extension mount its own **Textual
-> widgets** into the TUI instead of publishing string data. It deliberately
-> couples extensions to Textual (the "component" type *is*
-> `textual.widget.Widget`) and pins both repos to a shared Textual version.
-> An extension that runs its own conversations (e.g. subagents) builds its own
-> agents strip and in-place conversation view with this seam. The API may
-> change.
+> This seam lets an extension mount its own **Textual widgets** into the TUI
+> instead of publishing string data. It deliberately makes Textual part of the
+> public extension contract (the "component" type *is*
+> `textual.widget.Widget`): extensions build against the Textual version tau
+> pins, and a Textual major bump is a coordinated break for core and
+> extensions together. An extension that runs its own conversations (e.g.
+> subagents) builds its own agents strip and in-place conversation view with
+> this seam. Prefer strings/data (message renderers, tool renderers, string
+> slot widgets) when they are enough — they work in every frontend, including
+> print mode; reach for widgets when the extension needs live, interactive UI.
 
 `tau.context.ui.components` (a `ComponentBridge`) hosts extension widgets.
 Always gate on `supports_components` first — it is `False` in print mode and on

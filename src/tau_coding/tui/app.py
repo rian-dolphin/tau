@@ -238,7 +238,7 @@ class _TuiExtensionUiBridge:
         )
         return await self._run_dialog(screen, default=None, timeout=timeout)
 
-    # -- component seam (experimental) -- pass-through to the app ------------
+    # -- component seam -- pass-through to the app ----------------------------
 
     @property
     def supports_components(self) -> bool:
@@ -335,7 +335,7 @@ class _TuiExtensionUiBridge:
 
 
 class _MainViewHandle:
-    """Host-side handle to an open extension main view (experimental seam).
+    """Host-side handle to an open extension main view.
 
     ``close(result)`` is idempotent and routes back to the app, which unmounts
     the widget and restores the main transcript; it also resolves ``wait()``
@@ -2161,7 +2161,7 @@ class TauTuiApp(App[None]):
         scrollbar-size-horizontal: 1;
     }
 
-    /* Component seam (experimental): generic extension mount points. */
+    /* Component seam: generic extension mount points. */
     #main-slot {
         display: none;
         height: 1fr;
@@ -2556,7 +2556,7 @@ class TauTuiApp(App[None]):
         self._prompt_history: tuple[str, ...] = ()
         self._load_session_messages_from_session()
         self.adapter = TuiEventAdapter(self.state)
-        # Component seam (experimental): host-owned tracking of extension
+        # Component seam: host-owned tracking of extension
         # widgets so a reload/rebind can force-clear them and a crash can
         # quarantine them. Must exist before _connect_extension_runtime, which
         # clears them on every bind.
@@ -2644,7 +2644,7 @@ class TauTuiApp(App[None]):
                     highlight=True,
                     markup=False,
                 )
-                # Component seam (experimental): host-managed mount points for
+                # Component seam: host-managed mount points for
                 # extension widgets. Empty until an extension mounts into them.
                 yield Container(id="main-slot")
                 yield Container(id="above-prompt-slot")
@@ -3061,7 +3061,7 @@ class TauTuiApp(App[None]):
             content, source="extension", custom_type=custom_type, details=details
         )
 
-    # -- component seam (experimental) --------------------------------------
+    # -- component seam ------------------------------------------------------
 
     def _current_prompt_text(self) -> str:
         """Return the prompt-editor text, or "" before the prompt exists."""
