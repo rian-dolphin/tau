@@ -240,6 +240,10 @@ def setup(tau):
     components.set_slot_widget("my-widget", build_strip, placement="below_prompt")
     # set_slot_widget("my-widget", None) removes it again.
 
+    # For plain text you can skip the factory (and the Textual import) entirely
+    # by passing a list of display lines — the host renders them as Rich markup:
+    #   components.set_slot_widget("status", ["[b]ready[/b]", "2 tasks queued"])
+
     # A pre-dispatch key hook (ports Pi's onTerminalInput): it is consulted
     # before the host's app-level priority bindings AND before the focused
     # widget, so returning True for "escape" preempts the turn-cancel and
@@ -255,10 +259,12 @@ def setup(tau):
     unsubscribe = components.register_key_interceptor(on_key)
 ```
 
-- `set_slot_widget(key, factory, *, placement="below_prompt")` mounts
-  `factory(theme)` into a prompt-adjacent slot (`"above_prompt"` or
-  `"below_prompt"`); passing `factory=None` removes that key. Multiple keys per
-  placement mount in call order.
+- `set_slot_widget(key, content, *, placement="above_prompt")` mounts an
+  extension widget into a prompt-adjacent slot (`"above_prompt"` — the default —
+  or `"below_prompt"`). `content` is either a `factory(theme)` callable or a
+  plain list of display lines the host renders as Rich markup (so a text-only
+  widget needs no Textual import); passing `content=None` removes that key.
+  Multiple keys per placement mount in call order.
 - `open_main_view(factory) -> handle` mounts `factory(handle, theme)` as a
   full main-area view *in place of* the transcript (a display-toggled sibling,
   **not** a modal screen), so your slot widgets stay visible and the prompt

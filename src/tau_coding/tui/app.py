@@ -65,6 +65,7 @@ from tau_coding.extensions.api import (
     MainViewFactory,
     MainViewHandle,
     Placement,
+    SlotWidgetContent,
     SlotWidgetFactory,
 )
 from tau_coding.oauth import OAuthAuthInfo, OAuthPrompt, login_openai_codex
@@ -125,6 +126,7 @@ from tau_coding.tui.widgets import (
     CompactSessionInfo,
     SessionSidebar,
     TranscriptView,
+    _custom_markup_to_text,
     render_completion_suggestions,
 )
 
@@ -263,12 +265,12 @@ class _TuiExtensionUiBridge:
     def set_slot_widget(
         self,
         key: str,
-        factory: SlotWidgetFactory | None,
+        content: SlotWidgetContent | None,
         *,
-        placement: Placement = "below_prompt",
+        placement: Placement = "above_prompt",
     ) -> None:
-        """Mount or remove an extension slot widget by key."""
-        self._app._set_extension_slot_widget(key, factory, placement)
+        """Mount or remove an extension slot widget by key (factory or lines)."""
+        self._app._set_extension_slot_widget(key, content, placement)
 
     def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
         """Open a full main-area extension view (display-toggled, not modal)."""
@@ -3090,13 +3092,29 @@ class TauTuiApp(App[None]):
         self._extension_swap_tasks.add(task)
         task.add_done_callback(self._extension_swap_tasks.discard)
 
+    @staticmethod
+    def _string_slot_widget(lines: Sequence[str]) -> Static:
+        """Build a slot ``Static`` from display lines (Rich markup, safe fallback).
+
+        Joins ``lines`` with newlines and parses them as Rich markup; if the
+        markup is malformed the literal text is shown instead, mirroring the
+        custom-message renderer's guard so a bad string never crashes the TUI.
+        """
+        content = "\n".join(lines)
+        return Static(_custom_markup_to_text(content))
+
     def _set_extension_slot_widget(
         self,
         key: str,
-        factory: SlotWidgetFactory | None,
+        content: SlotWidgetContent | None,
         placement: Placement,
     ) -> None:
-        """Mount ``factory(theme)`` into a prompt-adjacent slot, or unmount it.
+        """Mount an extension widget into a prompt-adjacent slot, or unmount it.
+
+        ``content`` is a ``factory(theme)`` callable, a list of display lines
+        the host renders into a ``Static``, or ``None`` to unmount. The string
+        form is normalized into a factory here so the reconcile/quarantine/
+        replace machinery below is untouched.
 
         The intended widget is recorded synchronously so mid-swap reads (clear,
         quarantine, refresh) see what *should* occupy the slot; the actual
@@ -3104,6 +3122,19 @@ class TauTuiApp(App[None]):
         of a same-id widget fully drains before the replacement mounts (else the
         DOM briefly holds two widgets with one id -> ``DuplicateIds``).
         """
+        factory: SlotWidgetFactory | None
+        if content is None:
+            factory = None
+        elif callable(content):
+            # Check callable() first: a Sequence[str] test must never swallow a
+            # factory (and a factory is not a Sequence).
+            factory = content
+        else:
+            # A plain list of display lines: build the widget host-side so the
+            # extension needs no Textual import. A bare str is treated as one
+            # line (never split into characters).
+            lines = [content] if isinstance(content, str) else list(content)
+            factory = lambda _theme: self._string_slot_widget(lines)  # noqa: E731
         new_widget: Widget | None = None
         if factory is not None:
             try:

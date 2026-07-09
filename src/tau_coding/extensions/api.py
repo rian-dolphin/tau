@@ -112,6 +112,12 @@ Placement = Literal["above_prompt", "below_prompt"]
 # Factories run on the UI thread and receive the live theme (theme handoff,
 # mirrors Pi's ``(tui, theme) => Component``).
 SlotWidgetFactory = Callable[["TuiTheme"], "Widget"]
+# A slot widget may be given as a factory or, for the simple case, as a plain
+# list of display lines the HOST turns into a widget — this lets an extension
+# mount text without importing Textual at all (ports Pi's ``string[]`` form of
+# ``setWidget``). Strings are rendered as Rich markup, with a literal-text
+# fallback if the markup is malformed.
+SlotWidgetContent = Sequence[str] | SlotWidgetFactory
 # The main-view factory also receives the handle so the widget can close itself.
 MainViewFactory = Callable[["MainViewHandle", "TuiTheme"], "Widget"]
 
@@ -187,14 +193,18 @@ class ComponentBridge(Protocol):
     def set_slot_widget(
         self,
         key: str,
-        factory: SlotWidgetFactory | None,
+        content: SlotWidgetContent | None,
         *,
-        placement: Placement = "below_prompt",
+        placement: Placement = "above_prompt",
     ) -> None:
-        """Mount ``factory(theme)`` into a prompt-adjacent slot under ``key``.
+        """Mount an extension widget into a prompt-adjacent slot under ``key``.
 
-        Passing ``factory=None`` unmounts and forgets that key. Multiple keys
-        per placement mount in call order.
+        ``content`` is either a ``factory(theme) -> Widget`` callable or a plain
+        list of display lines (``Sequence[str]``) the host renders as Rich
+        markup — the string form lets simple extensions avoid importing Textual.
+        Passing ``content=None`` unmounts and forgets that key. Re-setting a key
+        replaces its content. Multiple keys per placement mount in call order.
+        Placement defaults to ``"above_prompt"`` (Pi's ``aboveEditor``).
         """
         ...
 
@@ -396,11 +406,11 @@ class UiBridge(Protocol):
     def set_slot_widget(
         self,
         key: str,
-        factory: SlotWidgetFactory | None,
+        content: SlotWidgetContent | None,
         *,
-        placement: Placement = "below_prompt",
+        placement: Placement = "above_prompt",
     ) -> None:
-        """Mount or remove an extension slot widget."""
+        """Mount or remove an extension slot widget (factory or string lines)."""
         ...
 
     def open_main_view(self, factory: MainViewFactory) -> MainViewHandle:
@@ -494,9 +504,9 @@ class NullUiBridge:
     def set_slot_widget(
         self,
         key: str,
-        factory: SlotWidgetFactory | None,
+        content: SlotWidgetContent | None,
         *,
-        placement: Placement = "below_prompt",
+        placement: Placement = "above_prompt",
     ) -> None:
         """Do nothing: there is no slot to mount into."""
 

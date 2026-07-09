@@ -6395,15 +6395,120 @@ async def test_component_slot_widget_replace_reregisters() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        bridge.set_slot_widget("k", lambda theme: Static("one", id="ext-one"))
+        bridge.set_slot_widget(
+            "k", lambda theme: Static("one", id="ext-one"), placement="below_prompt"
+        )
         await pilot.pause()
-        bridge.set_slot_widget("k", lambda theme: Static("two", id="ext-two"))
+        bridge.set_slot_widget(
+            "k", lambda theme: Static("two", id="ext-two"), placement="below_prompt"
+        )
         await pilot.pause()
 
         slot = app.query_one("#below-prompt-slot", Container)
         assert not slot.query("#ext-one")
         assert slot.query("#ext-two")
         assert len(app._extension_slot_widgets) == 1
+
+
+@pytest.mark.anyio
+async def test_component_slot_widget_strings_mount_and_render() -> None:
+    """A plain list of lines mounts as a Static the host builds (no widget defined)."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("lines", ["hello", "world"], placement="below_prompt")
+        await pilot.pause()
+
+        slot = app.query_one("#below-prompt-slot", Container)
+        statics = slot.query(Static)
+        assert statics
+        text = statics.first().render().plain
+        assert "hello" in text
+        assert "world" in text
+        assert "lines" in app._extension_slot_widgets
+
+
+@pytest.mark.anyio
+async def test_component_slot_widget_strings_replace_updates_content() -> None:
+    """Re-setting a key with different lines replaces the rendered content."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("lines", ["first"], placement="below_prompt")
+        await pilot.pause()
+        bridge.set_slot_widget("lines", ["second"], placement="below_prompt")
+        await pilot.pause()
+
+        slot = app.query_one("#below-prompt-slot", Container)
+        statics = slot.query(Static)
+        assert len(statics) == 1
+        text = statics.first().render().plain
+        assert "second" in text
+        assert "first" not in text
+
+
+@pytest.mark.anyio
+async def test_component_slot_widget_strings_none_unmounts() -> None:
+    """Setting a string slot to None unmounts and forgets the key."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("lines", ["visible"], placement="below_prompt")
+        await pilot.pause()
+        slot = app.query_one("#below-prompt-slot", Container)
+        assert slot.query(Static)
+
+        bridge.set_slot_widget("lines", None, placement="below_prompt")
+        await pilot.pause()
+        assert not slot.query(Static)
+        assert "lines" not in app._extension_slot_widgets
+
+
+@pytest.mark.anyio
+async def test_component_slot_widget_strings_malformed_markup_falls_back() -> None:
+    """Malformed Rich markup in a string widget renders literally, never crashes."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        # An unclosed tag is invalid Rich markup; from_markup would raise.
+        bridge.set_slot_widget("bad", ["[not-a-tag"], placement="below_prompt")
+        await pilot.pause()
+
+        assert app.is_running
+        slot = app.query_one("#below-prompt-slot", Container)
+        statics = slot.query(Static)
+        assert statics
+        text = statics.first().render().plain
+        assert "[not-a-tag" in text
+        assert app._extension_component_failures_reported == set()
+
+
+@pytest.mark.anyio
+async def test_component_slot_widget_default_placement_is_above_prompt() -> None:
+    """With no explicit placement, a slot widget mounts into #above-prompt-slot."""
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("k", lambda theme: Static("x", id="ext-default"))
+        await pilot.pause()
+
+        assert app.query_one("#above-prompt-slot", Container).query("#ext-default")
+        assert not app.query_one("#below-prompt-slot", Container).query("#ext-default")
 
 
 @pytest.mark.anyio

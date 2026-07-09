@@ -165,6 +165,20 @@ dead handle, `register_key_interceptor` returns a no-op unsubscribe,
 `supports_components=False` view) so extensions call
 `context.ui.components.set_slot_widget(...)`.
 
+> **Implementation note (landed):** `set_slot_widget` now matches pi's
+> `setWidget` on two points the first cut deferred. (1) **String-array form
+> ported** — `content` is `SlotWidgetContent = Sequence[str] |
+> SlotWidgetFactory | None` (not factory-only). A list of display lines is
+> turned into a `Static` **host-side** (joined with newlines, parsed as Rich
+> markup with a literal-text fallback via `_custom_markup_to_text`, mirroring
+> the custom-message renderer guard), so a simple extension never imports
+> Textual. The host normalizes strings into a factory inside
+> `_set_extension_slot_widget` — it checks `callable()` first so a `Sequence`
+> test can't swallow a factory, and treats a bare `str` as one line — leaving
+> the reconcile/quarantine/last-writer-wins machinery untouched. (2)
+> **`placement` default is now `"above_prompt"`** (pi's `aboveEditor`), not
+> `"below_prompt"`.
+
 **Removed from `api.py`:** `TranscriptSource`, `TranscriptSourceStatus`,
 `TranscriptSourceProvider`, `TranscriptSourcesChangedCallback`,
 `UiBridge.view_transcript`, `ExtensionUi.view_transcript`,

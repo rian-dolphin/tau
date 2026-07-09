@@ -1089,7 +1089,7 @@ class RecordingUiBridge:
     def request_render(self) -> None:
         self.calls.append(("request_render", (), {}))
 
-    def set_slot_widget(self, key, factory, *, placement="below_prompt"):  # noqa: ANN001
+    def set_slot_widget(self, key, factory, *, placement="above_prompt"):  # noqa: ANN001
         self.calls.append(("set_slot_widget", (key,), {"placement": placement}))
 
     def open_main_view(self, factory):  # noqa: ANN001

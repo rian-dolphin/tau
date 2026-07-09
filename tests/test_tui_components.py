@@ -106,11 +106,15 @@ async def test_component_slot_replace_same_id_same_tick_no_duplicate() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        bridge.set_slot_widget("k", lambda theme: Static("one", id="dup-slot"))
+        bridge.set_slot_widget(
+            "k", lambda theme: Static("one", id="dup-slot"), placement="below_prompt"
+        )
         await pilot.pause()
         # Same tick: unmount then re-register the SAME id (the reload analog).
-        bridge.set_slot_widget("k", None)
-        bridge.set_slot_widget("k", lambda theme: Static("two", id="dup-slot"))
+        bridge.set_slot_widget("k", None, placement="below_prompt")
+        bridge.set_slot_widget(
+            "k", lambda theme: Static("two", id="dup-slot"), placement="below_prompt"
+        )
         await pilot.pause()
         await pilot.pause()
 
@@ -138,11 +142,11 @@ async def test_component_slot_rapid_a_b_c_last_wins() -> None:
 
             return build
 
-        bridge.set_slot_widget("k", factory("pre"))
+        bridge.set_slot_widget("k", factory("pre"), placement="below_prompt")
         await pilot.pause()
-        bridge.set_slot_widget("k", factory("A"))
-        bridge.set_slot_widget("k", factory("B"))
-        bridge.set_slot_widget("k", factory("C"))
+        bridge.set_slot_widget("k", factory("A"), placement="below_prompt")
+        bridge.set_slot_widget("k", factory("B"), placement="below_prompt")
+        bridge.set_slot_widget("k", factory("C"), placement="below_prompt")
         await pilot.pause()
         await pilot.pause()
 
