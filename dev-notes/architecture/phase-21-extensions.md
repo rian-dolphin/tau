@@ -222,9 +222,27 @@ Lifecycle events, dispatched by the runtime:
 |---|---|---|
 | `session_start` | `SessionStartEvent(reason: "startup" \| "reload" \| "new" \| "resume" \| "branch")` | — |
 | `session_shutdown` | `SessionShutdownEvent(reason)` | — |
-| `input` | `InputEvent(text)` | `InputHookResult(action="continue" \| "transform" \| "handled", text=None, message=None)` |
+| `input` | `InputEvent(text, source="interactive" \| "extension", streaming_behavior="steer" \| "follow_up" \| None)` | `InputHookResult(action="continue" \| "transform" \| "handled", text=None, message=None)` |
 | `tool_call` | `ToolCallHookEvent(tool_name, arguments)` | `ToolCallHookResult(block=False, reason=None, arguments=None)` |
 | `tool_result` | `ToolResultHookEvent(tool_name, arguments, result)` | `ToolResultHookResult(content=None, ok=None, details=None)` |
+
+**Ruling:** the `input` hook payload ports Pi's `InputEvent` metadata with two
+omissions. Pi's `images` field is dropped (Tau has no image input yet) and
+Pi's `"rpc"` source is dropped (Tau has no RPC mode), so `source` is just
+`"interactive" | "extension"`. Both new fields carry backward-compatible
+defaults (`source="interactive"`, `streaming_behavior=None`), so handlers that
+read only `.text` keep working. `source="extension"` is set when an extension
+starts an idle turn via `send_user_message`/`send_custom_message` — that path
+reaches `run_input_hooks` through `session.prompt`; when the session is already
+running, extension delivery routes through `queue_steering_message`/
+`queue_follow_up_message`, which bypass the hook stage entirely (no `input`
+fires). `streaming_behavior` **is** populated: user-typed mid-run submissions
+in the TUI go through `session.prompt(streaming_behavior=…)`, and `prompt`
+runs `input` hooks before the mid-run steer/follow-up branch, so the hook sees
+`"steer"`/`"follow_up"` on the streaming path and `None` on the idle path —
+matching Pi's "undefined when idle". (The `queue_*_message` seams remain
+hook-free, matching Pi, since those are host/extension-injected messages, not
+user input.)
 
 **Ruling:** the `tool_call`/`tool_result` hook payloads carry no
 `tool_call_id`. The hooks are implemented by wrapping tool executors, and

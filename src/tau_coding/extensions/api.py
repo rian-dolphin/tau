@@ -321,9 +321,23 @@ class SessionShutdownEvent:
 
 @dataclass(frozen=True, slots=True)
 class InputEvent:
-    """Payload for the `input` hook: raw user prompt text, before expansion."""
+    """Payload for the `input` hook: raw user prompt text, before expansion.
+
+    Mirrors Pi's `InputEvent`. `source` says where the input came from:
+    ``"interactive"`` for TUI/print-mode user input, ``"extension"`` for a turn
+    an extension started via ``send_user_message``/``send_custom_message``.
+    `streaming_behavior` says how the input will be queued when the agent is
+    mid-run (``"steer"``/``"follow_up"``), and is ``None`` on the idle prompt
+    path.
+
+    Pi's `images` field is omitted (Tau has no image input yet) and Pi's
+    ``"rpc"`` source is omitted (Tau has no RPC mode). Both defaults keep
+    existing handlers that read only ``.text`` working unchanged.
+    """
 
     text: str
+    source: Literal["interactive", "extension"] = "interactive"
+    streaming_behavior: Literal["steer", "follow_up"] | None = None
 
 
 @dataclass(frozen=True, slots=True)

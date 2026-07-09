@@ -6,7 +6,7 @@ from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from tau_agent.events import AgentEvent
 from tau_agent.messages import AgentMessage
@@ -757,12 +757,30 @@ class ExtensionRuntime:
         """Dispatch `session_shutdown` to subscribed extensions."""
         await self._emit_lifecycle("session_shutdown", SessionShutdownEvent(reason=reason))
 
-    async def run_input_hooks(self, text: str) -> InputHookOutcome:
-        """Run `input` hooks over prompt text; transforms chain, handled wins."""
+    async def run_input_hooks(
+        self,
+        text: str,
+        *,
+        source: Literal["interactive", "extension"] = "interactive",
+        streaming_behavior: Literal["steer", "follow_up"] | None = None,
+    ) -> InputHookOutcome:
+        """Run `input` hooks over prompt text; transforms chain, handled wins.
+
+        `source`/`streaming_behavior` are surfaced to handlers on the
+        `InputEvent` payload; they do not change chaining semantics.
+        """
         current = text
         for extension, handler in self._handlers_for("input"):
             try:
-                result = await _resolve(handler(InputEvent(text=current)))
+                result = await _resolve(
+                    handler(
+                        InputEvent(
+                            text=current,
+                            source=source,
+                            streaming_behavior=streaming_behavior,
+                        )
+                    )
+                )
             except Exception as exc:  # noqa: BLE001 - extensions are an isolation boundary
                 self._record_runtime_failure(extension, "input", exc)
                 continue

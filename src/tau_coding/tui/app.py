@@ -2954,6 +2954,7 @@ class TauTuiApp(App[None]):
         self,
         text: str,
         *,
+        source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
@@ -2964,7 +2965,9 @@ class TauTuiApp(App[None]):
             self._optimistic_user_messages.append((run_id, text))
             await self._append_optimistic_user_message(text)
         self._prompt_worker = self.run_worker(
-            self._run_prompt(text, run_id, custom_type=custom_type, details=details),
+            self._run_prompt(
+                text, run_id, source=source, custom_type=custom_type, details=details
+            ),
             exclusive=True,
         )
 
@@ -3054,7 +3057,9 @@ class TauTuiApp(App[None]):
             if callable(queue_follow_up):
                 queue_follow_up(content, custom_type=custom_type, details=details)
             return
-        await self._submit_prompt(content, custom_type=custom_type, details=details)
+        await self._submit_prompt(
+            content, source="extension", custom_type=custom_type, details=details
+        )
 
     # -- component seam (experimental) --------------------------------------
 
@@ -3563,6 +3568,7 @@ class TauTuiApp(App[None]):
         text: str,
         run_id: int | None = None,
         *,
+        source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> None:
@@ -3570,7 +3576,7 @@ class TauTuiApp(App[None]):
         active_run_id = self._prompt_run_id if run_id is None else run_id
         try:
             async for event in self.session.prompt(
-                text, custom_type=custom_type, details=details
+                text, source=source, custom_type=custom_type, details=details
             ):
                 if active_run_id != self._prompt_run_id:
                     return

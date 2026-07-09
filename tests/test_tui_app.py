@@ -172,6 +172,7 @@ class FakeSession:
         self.tree_branch_requests: list[tuple[str, bool, str | None]] = []
         self.new_session_count = 0
         self.prompt_texts: list[str] = []
+        self.prompt_sources: list[str] = []
         self.reload_count = 0
         self.provider_reload_count = 0
         self.queued_steering_messages: tuple[str, ...] = ()
@@ -394,10 +395,12 @@ class FakeSession:
         text: str,
         *,
         streaming_behavior: str | None = None,
+        source: str = "interactive",
         custom_type: str | None = None,
         details: dict[str, object] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         self.prompt_texts.append(text)
+        self.prompt_sources.append(source)
         self.streaming_behaviors.append(streaming_behavior)
         if streaming_behavior == "steer":
             self.queued_steering_messages = (*self.queued_steering_messages, text)
@@ -2440,10 +2443,11 @@ async def test_tui_app_updates_terminal_title_after_auto_session_naming() -> Non
             text: str,
             *,
             streaming_behavior: str | None = None,
+            source: str = "interactive",
             custom_type: str | None = None,
             details: dict[str, object] | None = None,
         ) -> AsyncIterator[AgentEvent]:
-            del streaming_behavior, custom_type, details
+            del streaming_behavior, source, custom_type, details
             self.prompt_texts.append(text)
             yield AgentStartEvent()
             self._session_title = "Debug login"
@@ -3193,6 +3197,27 @@ async def test_tui_app_submits_multiline_prompt_with_enter() -> None:
 
     assert session.prompt_texts == ["first\nsecond"]
     assert prompt.value == ""
+
+
+@pytest.mark.anyio
+async def test_tui_extension_turn_delivers_source_extension() -> None:
+    # An extension-initiated idle turn threads source="extension" through the
+    # serialized prompt path; ordinary user submits stay source="interactive".
+    class IdleSession(FakeSession):
+        @property
+        def is_running(self) -> bool:
+            return False
+
+    session = IdleSession(events=[AgentStartEvent(), AgentEndEvent()])
+    app = TauTuiApp(session)
+
+    async with app.run_test() as pilot:
+        await app._deliver_extension_message("from extension")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert session.prompt_texts == ["from extension"]
+    assert session.prompt_sources == ["extension"]
 
 
 @pytest.mark.anyio

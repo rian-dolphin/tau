@@ -19,6 +19,7 @@ from tau_coding.extensions import (
     ExtensionAPI,
     ExtensionError,
     ExtensionRuntime,
+    InputEvent,
     InputHookResult,
     MessageRenderOptions,
     ToolCallHookResult,
@@ -853,6 +854,48 @@ async def test_input_hook_handled_short_circuits(tmp_path: Path) -> None:
     assert outcome.message == "done"
 
 
+def test_input_event_defaults_backward_compatible() -> None:
+    # Existing handlers construct/read InputEvent(text=...) with no metadata.
+    event = InputEvent(text="hello")
+    assert event.text == "hello"
+    assert event.source == "interactive"
+    assert event.streaming_behavior is None
+    # Frozen-dataclass equality still holds across the new (defaulted) fields.
+    assert event == InputEvent(text="hello")
+    assert event == InputEvent(text="hello", source="interactive", streaming_behavior=None)
+    assert event != InputEvent(text="hello", source="extension")
+
+
+async def test_input_hook_defaults_to_interactive_idle(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "capture")
+    seen: list[InputEvent] = []
+
+    def _hook(event: InputEvent) -> None:
+        seen.append(event)
+
+    api.on("input", _hook)  # type: ignore[attr-defined]
+
+    await runtime.run_input_hooks("hi")
+
+    assert len(seen) == 1
+    assert seen[0].source == "interactive"
+    assert seen[0].streaming_behavior is None
+
+
+async def test_input_hook_receives_source_and_streaming_behavior(tmp_path: Path) -> None:
+    runtime = ExtensionRuntime()
+    api = _register_inline_extension(runtime, "capture")
+    seen: list[InputEvent] = []
+    api.on("input", seen.append)  # type: ignore[attr-defined]
+
+    await runtime.run_input_hooks("go", source="extension", streaming_behavior="steer")
+
+    assert len(seen) == 1
+    assert seen[0].source == "extension"
+    assert seen[0].streaming_behavior == "steer"
+
+
 async def test_agent_event_fan_out_and_wildcard(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     api = _register_inline_extension(runtime, "observer")
@@ -1465,6 +1508,63 @@ async def test_input_handled_prevents_agent_run(tmp_path: Path) -> None:
     assert events == []
     assert provider.calls == []
     assert session.messages == ()
+
+
+async def test_prompt_input_hook_defaults_to_interactive(tmp_path: Path) -> None:
+    # The plain session.prompt path (TUI idle submit, print mode) tags the
+    # input hook with source="interactive" and no streaming behavior.
+    body = (
+        "from tau_coding.extensions import InputHookResult\n\n\n"
+        "def _hook(event):\n"
+        "    tag = f'{event.text}|src={event.source}|sb={event.streaming_behavior}'\n"
+        "    return InputHookResult(action='transform', text=tag)\n\n\n"
+        "def setup(tau):\n"
+        "    tau.on('input', _hook)\n"
+    )
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="ok")),
+            ]
+        ]
+    )
+    session = await CodingSession.load(
+        _session_config(tmp_path, provider, extension_body=body)
+    )
+
+    _ = [event async for event in session.prompt("hello")]
+
+    user_messages = [m for m in session.messages if isinstance(m, UserMessage)]
+    assert user_messages[0].content == "hello|src=interactive|sb=None"
+
+
+async def test_prompt_input_hook_source_extension(tmp_path: Path) -> None:
+    # source="extension" flows through prompt() to the input hook, mirroring the
+    # TUI extension-initiated idle turn (send_user_message -> turn_requested).
+    body = (
+        "from tau_coding.extensions import InputHookResult\n\n\n"
+        "def _hook(event):\n"
+        "    return InputHookResult(action='transform', text=f'{event.text}|{event.source}')\n\n\n"
+        "def setup(tau):\n"
+        "    tau.on('input', _hook)\n"
+    )
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="ok")),
+            ]
+        ]
+    )
+    session = await CodingSession.load(
+        _session_config(tmp_path, provider, extension_body=body)
+    )
+
+    _ = [event async for event in session.prompt("hello", source="extension")]
+
+    user_messages = [m for m in session.messages if isinstance(m, UserMessage)]
+    assert user_messages[0].content == "hello|extension"
 
 
 async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:

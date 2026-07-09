@@ -1376,6 +1376,7 @@ class CodingSession:
         content: str,
         *,
         streaming_behavior: StreamingBehavior | None = None,
+        source: Literal["interactive", "extension"] = "interactive",
         custom_type: str | None = None,
         details: dict[str, JSONValue] | None = None,
     ) -> AsyncIterator[AgentEvent]:
@@ -1383,10 +1384,14 @@ class CodingSession:
 
         ``custom_type``/``details`` attach custom-message render metadata to the
         appended ``UserMessage`` (used when an extension delivers a custom
-        message that starts an idle session's turn).
+        message that starts an idle session's turn). ``source`` marks who
+        initiated the turn for the `input` hook (``"extension"`` when an
+        extension started it, ``"interactive"`` otherwise).
         """
         context = self._diagnostic_context()
-        input_outcome = await self._extension_runtime.run_input_hooks(content)
+        input_outcome = await self._extension_runtime.run_input_hooks(
+            content, source=source, streaming_behavior=streaming_behavior
+        )
         if input_outcome.handled:
             if input_outcome.message:
                 self._extension_runtime.ui.notify(input_outcome.message)
