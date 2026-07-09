@@ -40,7 +40,8 @@ analog, deviations flagged **Ruling-style**.
 
 ### 1a. `ctx.ui` component-related API
 
-All from `reference/pi/packages/coding-agent/src/core/extensions/types.ts`,
+All from `packages/coding-agent/src/core/extensions/types.ts` in
+`earendil-works/pi`,
 interface `ExtensionUIContext` (L125–276). Only the component-relevant members:
 
 | Member | Signature (abridged) | Semantics |
@@ -57,7 +58,7 @@ interface `ExtensionUIContext` (L125–276). Only the component-relevant members
 
 ### 1b. pi-tui `Component` lifecycle
 
-From `reference/pi/packages/tui/src/tui.ts`:
+From `packages/tui/src/tui.ts` in `earendil-works/pi`:
 
 - **`Component`** (L64–88): `render(width:number):string[]`; optional
   `handleInput?(data:string):void` (only when focused); optional
@@ -561,7 +562,8 @@ runtime's existing "swallow + diagnose once" discipline (runtime.py
 
 ## 3. Core removal list
 
-All references are in `~/.herdr/worktrees/tau/worktree-extensions`.
+Line references are against this repo as of the pre-experiment baseline
+(`subagents-integration`); they drifted as the steps landed.
 
 **`src/tau_coding/tui/app.py`**
 - `class AgentStrip(Static)` + its `on_click` (L1082–1090).
