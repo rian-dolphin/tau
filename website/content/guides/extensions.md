@@ -375,7 +375,9 @@ tau.send_custom_message(
   `content` — a broken renderer never crashes the UI.
 - Custom rendering works in the interactive TUI and the `-p` print transcript,
   and survives `/resume` (the `custom_type`/`details` are persisted with the
-  message).
+  message). In the TUI, a custom message appears once its user event is
+  confirmed by the run (a moment after delivery), rather than instantly like a
+  typed prompt's optimistic echo.
 
 ## Growing and maintaining an extension
 

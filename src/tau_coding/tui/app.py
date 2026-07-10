@@ -2961,7 +2961,12 @@ class TauTuiApp(App[None]):
         """Add a prompt to the transcript and start the agent worker."""
         self._prompt_run_id += 1
         run_id = self._prompt_run_id
-        if _should_optimistically_render_prompt(text):
+        # Custom messages are never rendered optimistically: the optimistic
+        # dedupe matches on exact content equality with the post-expansion
+        # event (see _consume_optimistic_user_event), and a mismatch would
+        # double-render. They render once, from the confirmed user event,
+        # which carries their custom_type/details.
+        if custom_type is None and _should_optimistically_render_prompt(text):
             self._optimistic_user_messages.append((run_id, text))
             await self._append_optimistic_user_message(text)
         self._prompt_worker = self.run_worker(
@@ -2971,10 +2976,16 @@ class TauTuiApp(App[None]):
             exclusive=True,
         )
 
-    async def _append_optimistic_user_message(self, text: str) -> None:
+    async def _append_optimistic_user_message(
+        self,
+        text: str,
+        *,
+        custom_type: str | None = None,
+        details: dict[str, JSONValue] | None = None,
+    ) -> None:
         """Render a submitted user message immediately without rebuilding the transcript."""
         start_index = len(self.state.items)
-        self.state.add_user_message(text)
+        self.state.add_user_message(text, custom_type=custom_type, details=details)
         self._follow_transcript_output()
         if not self.screen_stack:
             self._refresh()
@@ -2991,6 +3002,9 @@ class TauTuiApp(App[None]):
                 theme=theme,
                 show_tool_results=self.state.show_tool_results,
                 scroll_end=True,
+                custom_markup=self.state.resolve_custom_markup(
+                    item, expanded=self.state.show_tool_results
+                ),
             )
         self._refresh_chrome(theme=theme)
 
@@ -3015,7 +3029,11 @@ class TauTuiApp(App[None]):
         if not isinstance(message, UserMessage):
             self._refresh()
             return
-        await self._append_optimistic_user_message(message.content)
+        await self._append_optimistic_user_message(
+            message.content,
+            custom_type=message.custom_type,
+            details=message.details,
+        )
 
     def _connect_extension_runtime(self, session: CodingSession) -> None:
         """Give the extension runtime a UI bridge and an idle-run entry point."""

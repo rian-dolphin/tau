@@ -704,6 +704,7 @@ class TranscriptView(VerticalScroll):
         theme: TuiTheme = TAU_DARK_THEME,
         show_tool_results: bool = False,
         scroll_end: bool = False,
+        custom_markup: str | None = None,
         invocation: str | None = None,
         result_markup: str | None = None,
     ) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
@@ -716,6 +717,7 @@ class TranscriptView(VerticalScroll):
             item,
             theme=theme,
             show_tool_results=show_tool_results,
+            custom_markup=custom_markup,
             invocation=invocation,
             result_markup=result_markup,
         )
@@ -889,6 +891,7 @@ def _transcript_widget(
     *,
     theme: TuiTheme,
     show_tool_results: bool,
+    custom_markup: str | None = None,
     invocation: str | None = None,
     result_markup: str | None = None,
 ) -> TranscriptMessageWidget | StreamingTranscriptMessageWidget:
@@ -898,6 +901,7 @@ def _transcript_widget(
         item,
         theme=theme,
         show_tool_results=show_tool_results,
+        custom_markup=custom_markup,
         invocation=invocation,
         result_markup=result_markup,
     )

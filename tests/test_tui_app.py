@@ -2642,6 +2642,16 @@ class _RenderCallRuntime:
         return None
 
 
+class _CustomMessageRuntime(_RenderCallRuntime):
+    """Runtime stub whose custom renderer produces a card for notifications."""
+
+    def render_custom_message(self, custom_type, content, details, expanded):  # noqa: ANN001
+        del content, expanded
+        if custom_type != "subagent-notification" or not details:
+            return None
+        return f"[green]✓[/green] {details.get('description')} completed"
+
+
 @pytest.mark.anyio
 async def test_restored_tool_calls_render_via_render_call() -> None:
     # Real startup order: session messages load into TuiState BEFORE the
@@ -3218,6 +3228,94 @@ async def test_tui_extension_turn_delivers_source_extension() -> None:
 
     assert session.prompt_texts == ["from extension"]
     assert session.prompt_sources == ["extension"]
+
+
+@pytest.mark.anyio
+async def test_tui_idle_extension_custom_message_renders_card_not_raw_content() -> None:
+    # A custom message delivered while idle (e.g. a background-subagent
+    # completion) must render through the registered custom renderer, never as
+    # its raw content. The optimistic prompt path skips custom messages (it
+    # cannot carry their metadata); they render once, from the confirmed user
+    # event, which does.
+    raw = "<task-notification>agent-1 completed</task-notification>"
+
+    class IdleSession(FakeSession):
+        @property
+        def is_running(self) -> bool:
+            return False
+
+    details = {"description": "Summarize codebase"}
+    session = IdleSession(
+        events=[
+            AgentStartEvent(),
+            MessageEndEvent(
+                message=UserMessage(
+                    content=raw,
+                    custom_type="subagent-notification",
+                    details=details,
+                )
+            ),
+            AgentEndEvent(),
+        ]
+    )
+    session.extension_runtime = _CustomMessageRuntime()
+    app = TauTuiApp(session)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        await app._deliver_extension_message(raw, "subagent-notification", details)
+        await pilot.pause()
+        await pilot.pause()
+
+        custom_items = [item for item in app.state.items if item.role == "custom"]
+        user_items = [item for item in app.state.items if item.role == "user"]
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "custom")
+        selection = widget.selection_text
+
+    assert [item.custom_type for item in custom_items] == ["subagent-notification"]
+    assert user_items == []
+    assert "✓ Summarize codebase completed" in selection
+    assert "<task-notification>" not in selection
+
+
+@pytest.mark.anyio
+async def test_tui_mid_run_custom_follow_up_renders_card_not_raw_content() -> None:
+    # A custom message queued into an active run (queue_follow_up_message)
+    # drains back as a user MessageEndEvent carrying custom_type; the
+    # incremental streaming path must preserve the metadata so the message
+    # renders as a card, not raw content.
+    raw = "<task-notification>agent-1 completed</task-notification>"
+    session = FakeSession(
+        events=[
+            AgentStartEvent(),
+            MessageEndEvent(message=UserMessage(content="New prompt")),
+            MessageEndEvent(
+                message=UserMessage(
+                    content=raw,
+                    custom_type="subagent-notification",
+                    details={"description": "Summarize codebase"},
+                )
+            ),
+            AgentEndEvent(),
+        ]
+    )
+    session.extension_runtime = _CustomMessageRuntime()
+    app = TauTuiApp(session)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await app._submit_prompt("New prompt")
+        await pilot.pause()
+        await pilot.pause()
+
+        custom_items = [item for item in app.state.items if item.role == "custom"]
+        user_texts = [item.text for item in app.state.items if item.role == "user"]
+        widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "custom")
+        selection = widget.selection_text
+
+    assert [item.custom_type for item in custom_items] == ["subagent-notification"]
+    assert user_texts == ["New prompt"]
+    assert "✓ Summarize codebase completed" in selection
+    assert "<task-notification>" not in selection
 
 
 @pytest.mark.anyio
