@@ -194,6 +194,10 @@ class ExtensionRuntime:
         """
         self._generation.invalidate()
         self._generation = ExtensionGeneration()
+        # Host-side extension UI (slot widgets, main views, key interceptors)
+        # belongs to the invalidated generation: tear it down with the
+        # registrations, or interceptors accumulate one copy per reload.
+        self.clear_ui_components()
         if self._harness_unsubscribe is not None:
             self._harness_unsubscribe()
             self._harness_unsubscribe = None
@@ -491,6 +495,16 @@ class ExtensionRuntime:
     def set_ui_bridge(self, ui: UiBridge) -> None:
         """Install the frontend UI bridge (TUI, print-mode fallback, or test)."""
         self._ui = ui
+
+    def clear_ui_components(self) -> None:
+        """Ask the host frontend to tear down all extension-owned UI.
+
+        Invoked on `/reload` (via ``reset_for_reload``) and by session
+        replacement flows (resume/new) before ``session_start`` fires, so
+        widgets and key interceptors never outlive the world that mounted
+        them while handlers keep the chance to re-mount.
+        """
+        self._ui.clear_components()
 
     def set_turn_requested_callback(self, callback: TurnRequestedCallback | None) -> None:
         """Install the host callback used to deliver messages while idle.

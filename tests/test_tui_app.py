@@ -7130,6 +7130,42 @@ async def test_component_mount_crash_is_quarantined() -> None:
 
 
 @pytest.mark.anyio
+async def test_component_bridge_clear_components_tears_down_extension_ui() -> None:
+    # clear_components is the teardown seam the runtime drives on /reload and
+    # session rebinds (resume/new): every slot widget, the main view (with its
+    # pending wait() resolved), and all key interceptors must go.
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause()
+        bridge = _component_bridge(app)
+
+        bridge.set_slot_widget("k", lambda theme: Static("x", id="ext-bridge-clear"))
+        unsubscribe = bridge.register_key_interceptor(lambda event, text: False)
+        handle = bridge.open_main_view(lambda h, theme: Static("v", id="ext-bridge-view"))
+        await pilot.pause()
+        assert app._extension_slot_widgets
+        assert app._extension_key_interceptors
+        assert handle.is_open
+        waiter = asyncio.ensure_future(handle.wait())
+
+        bridge.clear_components()
+        await pilot.pause()
+        await pilot.pause()
+
+        assert app._extension_slot_widgets == {}
+        assert app._extension_key_interceptors == []
+        assert app._extension_main_view is None
+        assert not handle.is_open
+        assert await waiter is None
+        assert app.query_one("#transcript", TranscriptView).display
+        assert not app.query("#ext-bridge-clear")
+        assert not app.query("#ext-bridge-view")
+        # A stale unsubscribe after the clear is a safe no-op.
+        unsubscribe()
+
+
+@pytest.mark.anyio
 async def test_component_rebind_clears_slots_and_interceptors() -> None:
     app = TauTuiApp(FakeSession())
 

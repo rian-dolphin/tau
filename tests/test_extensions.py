@@ -1138,6 +1138,9 @@ class RecordingUiBridge:
 
     def open_main_view(self, factory):  # noqa: ANN001
         self.calls.append(("open_main_view", (), {}))
+
+    def clear_components(self) -> None:
+        self.calls.append(("clear_components", (), {}))
         from tau_coding.extensions.api import _DeadMainViewHandle
 
         return _DeadMainViewHandle()
@@ -1750,6 +1753,43 @@ async def test_runtime_survives_new_session_swap(tmp_path: Path) -> None:
     assert session.extension_runtime is runtime_before
     assert ("stop", "new") in module.EVENTS
     assert ("start", "new") in module.EVENTS
+
+
+async def test_session_swap_clears_host_extension_components(tmp_path: Path) -> None:
+    # A session rebind (resume/new) must tear down extension-owned UI: slot
+    # widgets, main views, and key interceptors from the previous session
+    # otherwise survive the switch (session_start handlers can re-mount).
+    from dataclasses import replace as dataclass_replace
+
+    from tau_coding import SessionManager, TauPaths
+
+    provider = FakeProvider([])
+    manager = SessionManager(
+        TauPaths(home=tmp_path / "home-tau", agents_home=tmp_path / "home-agents")
+    )
+    config = _session_config(tmp_path, provider)
+    record = manager.create_session(cwd=config.cwd, model="fake")
+    config = dataclass_replace(config, session_manager=manager, session_id=record.id)
+    session = await CodingSession.load(config)
+    ui = RecordingUiBridge()
+    session.extension_runtime.set_ui_bridge(ui)
+
+    await session.new_session()
+
+    assert ("clear_components", (), {}) in ui.calls
+
+
+def test_reset_for_reload_clears_host_extension_components() -> None:
+    # /reload replaces the registration set; host-side extension UI (slot
+    # widgets, main views, key interceptors) belongs to the stale generation
+    # and must be torn down with it, or interceptors accumulate per reload.
+    ui = RecordingUiBridge()
+    runtime = ExtensionRuntime(ui=ui)
+    _register_inline_extension(runtime, "old")
+
+    runtime.reset_for_reload()
+
+    assert ("clear_components", (), {}) in ui.calls
 
 
 # -- reload staleness guard (Pi's assertActive/invalidate) ---------------------

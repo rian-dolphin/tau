@@ -509,6 +509,17 @@ class UiBridge(Protocol):
         """
         ...
 
+    def clear_components(self) -> None:
+        """Tear down all extension-owned UI (host-driven, not for extensions).
+
+        The runtime drives this on `/reload` (the stale generation's widgets
+        and interceptors must not outlive its registrations) and on session
+        rebinds (resume/new), before ``session_start`` fires so handlers can
+        re-mount. Slot widgets and any main view are unmounted (a pending
+        ``wait()`` resolves with ``None``) and key interceptors are dropped.
+        """
+        ...
+
 
 class _DeadMainViewHandle:
     """A no-op main-view handle returned when no UI can host a view."""
@@ -602,6 +613,9 @@ class NullUiBridge:
     def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
         """Return a no-op unsubscribe: no key stream to intercept."""
         return lambda: None
+
+    def clear_components(self) -> None:
+        """Do nothing: no components were ever mounted."""
 
 
 class StderrUiBridge(NullUiBridge):

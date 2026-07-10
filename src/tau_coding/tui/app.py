@@ -295,6 +295,10 @@ class _TuiExtensionUiBridge:
         """
         return self._app._register_extension_key_interceptor(handler)
 
+    def clear_components(self) -> None:
+        """Tear down all extension-owned UI (runtime-driven: /reload, rebind)."""
+        self._app._clear_extension_components()
+
     async def _run_dialog(
         self,
         screen: ModalScreen[_DialogResult],
@@ -3102,9 +3106,10 @@ class TauTuiApp(App[None]):
         if runtime is None:
             return
         # Force-clear any extension widgets before installing the new bridge.
-        # This runs on every bind (startup, /resume, new, branch); each session
-        # carries its own runtime, so widgets a previous session's extension
-        # mounted into these host-owned slots must not survive the switch.
+        # This runs once, at construction; later teardowns (/reload, resume,
+        # new) come through the installed bridge's clear_components(), driven
+        # by the runtime, so extension widgets and key interceptors never
+        # survive a world they were mounted in.
         self._clear_extension_components()
         runtime.set_ui_bridge(_TuiExtensionUiBridge(self))
         runtime.set_turn_requested_callback(self._on_extension_turn_requested)
@@ -3401,36 +3406,28 @@ class TauTuiApp(App[None]):
     def _clear_extension_components(self) -> None:
         """Force-clear every tracked extension widget, view, and interceptor.
 
-        Called before installing a new UI bridge (rebind / resume) and on
-        teardown so a leaked extension widget never survives a session switch.
-        Both the intended targets and the actually-mounted widgets are removed;
-        any in-flight swap continuation then sees empty state and no-ops.
+        The runtime drives this through the UI bridge on `/reload` and session
+        rebinds (resume/new); it also runs on app teardown, so a leaked
+        extension widget never survives a session switch. Intent is cleared
+        synchronously — mid-swap reads and in-flight continuations then see
+        empty state — while the actual unmounts run on the same serialized
+        per-key reconciles as ordinary swaps, so a clear followed immediately
+        by a re-mount of a same-id widget (a session_start handler re-mounting
+        after a rebind) can never hold two widgets with one id
+        (``DuplicateIds``).
         """
-        removed: set[int] = set()
-        for widget in (
-            *self._extension_slot_widgets.values(),
-            *self._extension_slot_mounted.values(),
-        ):
-            if id(widget) in removed:
-                continue
-            removed.add(id(widget))
-            with suppress(Exception):
-                widget.remove()
+        slot_keys = {*self._extension_slot_widgets, *self._extension_slot_mounted}
         self._extension_slot_widgets.clear()
-        self._extension_slot_mounted.clear()
         self._extension_slot_slot_ids.clear()
+        for key in slot_keys:
+            self._schedule_extension_swap(self._reconcile_slot(key))
         handle = self._extension_main_view
         self._extension_main_view = None
         self._release_main_view_handle(handle)
-        mounted = self._extension_main_view_mounted
-        self._extension_main_view_mounted = None
-        for widget in (handle.widget if handle is not None else None, mounted):
-            if widget is not None and id(widget) not in removed:
-                removed.add(id(widget))
-                with suppress(Exception):
-                    widget.remove()
-        self._restore_main_transcript()
+        self._schedule_extension_swap(self._reconcile_main_view())
         self._extension_key_interceptors.clear()
+        # A recurring failure context must notify again in the new world.
+        self._extension_component_failures_reported.clear()
 
     def _tracked_extension_widgets(self) -> tuple[Widget, ...]:
         """Return every extension widget the host currently tracks (intended or mounted)."""

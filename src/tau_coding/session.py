@@ -1261,6 +1261,11 @@ class CodingSession:
         replacement instance.
         """
         await self._extension_runtime.emit_session_shutdown(reason)
+        # Tear down extension-owned UI (slot widgets, main views, key
+        # interceptors) from the outgoing session after its shutdown handlers
+        # run and before session_start fires, so start handlers can re-mount
+        # into a clean frontend.
+        self._extension_runtime.clear_ui_components()
         self._config = replacement._config
         self._state = replacement._state
         self._harness = replacement._harness
