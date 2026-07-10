@@ -42,6 +42,7 @@ def test_load_provider_settings_missing_file_uses_openai_default(tmp_path: Path)
         "xai",
         "groq",
         "cerebras",
+        "nvidia",
         "openrouter",
         "zai",
         "mistral",
@@ -829,6 +830,10 @@ def test_load_provider_settings_does_not_restore_stale_codex_builtin_models(
     provider = settings.get_provider("openai-codex")
 
     assert provider.models == (
+        "gpt-5.6",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",

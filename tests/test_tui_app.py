@@ -16,6 +16,7 @@ from textual.widgets import Footer, Input, Label, ListItem, ListView, Static, Te
 from textual.widgets import Markdown as TextualMarkdown
 from textual.widgets.markdown import MarkdownStream
 
+from conftest import isolate_home
 from tau_agent import (
     AgentEndEvent,
     AgentEvent,
@@ -81,6 +82,7 @@ from tau_coding.tui.app import (
     _activity_prompt_border_color,
     _completion_selected_render_line,
     _terminal_command_prefix_span,
+    _textual_theme_for_tau_theme,
     _theme_css_variables,
     _TuiExtensionUiBridge,
     _visible_completion_state,
@@ -2290,6 +2292,8 @@ def test_tui_app_uses_configured_theme_css_variables() -> None:
     assert variables["tau-screen-background"] == "#000000"
     assert variables["tau-prompt-background"] == "#1a1a1a"
     assert variables["tau-prompt-border"] == "#00ff66"
+    assert app.theme == "high-contrast"
+    assert app.current_theme.name == "high-contrast"
 
 
 def test_tui_app_uses_light_theme_css_variables() -> None:
@@ -2306,6 +2310,22 @@ def test_tui_app_uses_light_theme_css_variables() -> None:
     assert variables["footer-foreground"] == "#111827"
     assert variables["footer-description-foreground"] == "#111827"
     assert variables["footer-key-foreground"] == "#0f766e"
+    assert app.current_theme.dark is False
+
+
+def test_tui_app_registers_only_tau_themes_with_textual() -> None:
+    app = TauTuiApp(FakeSession())
+
+    assert tuple(app.available_themes) == ("tau-dark", "tau-light", "high-contrast")
+
+
+def test_textual_theme_mapping_uses_tau_theme_values() -> None:
+    textual_theme = _textual_theme_for_tau_theme("tau-light")
+
+    assert textual_theme.name == "tau-light"
+    assert textual_theme.primary == TAU_LIGHT_THEME.accent
+    assert textual_theme.dark is False
+    assert textual_theme.variables["tau-screen-background"] == TAU_LIGHT_THEME.screen_background
 
 
 def test_tau_dark_theme_uses_black_chat_backgrounds() -> None:
@@ -2487,10 +2507,25 @@ async def test_tui_app_clears_activity_status_on_error() -> None:
 
 
 @pytest.mark.anyio
+async def test_textual_theme_change_persists_tau_theme(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    isolate_home(monkeypatch, tmp_path)
+    app = TauTuiApp(FakeSession())
+
+    async with app.run_test() as pilot:
+        app.theme = "tau-light"
+        await pilot.pause()
+
+    assert app.tui_settings.theme == "tau-light"
+    assert tui_settings_path().read_text(encoding="utf-8").find('"theme": "tau-light"') != -1
+
+
+@pytest.mark.anyio
 async def test_tui_app_theme_command_opens_picker_and_persists_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
@@ -2519,6 +2554,7 @@ async def test_tui_app_theme_command_opens_picker_and_persists_selection(
         await pilot.pause()
 
         assert app.tui_settings.theme == "tau-light"
+        assert app.theme == "tau-light"
         assert tui_settings_path().read_text(encoding="utf-8").find('"theme": "tau-light"') != -1
         assert app.get_theme_variable_defaults()["tau-screen-background"] == "#ffffff"
 
@@ -2880,7 +2916,7 @@ async def test_extension_select_dialog_timeout_returns_default() -> None:
 async def test_tui_app_theme_command_argument_updates_theme_and_persists(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
@@ -2889,6 +2925,7 @@ async def test_tui_app_theme_command_argument_updates_theme_and_persists(
         await pilot.press("enter")
 
         assert app.tui_settings.theme == "tau-light"
+        assert app.theme == "tau-light"
         assert tui_settings_path().read_text(encoding="utf-8").find('"theme": "tau-light"') != -1
         assert app.get_theme_variable_defaults()["tau-screen-background"] == "#ffffff"
 
@@ -3608,6 +3645,62 @@ async def test_tui_app_session_picker_arrow_keys_select_session() -> None:
         await pilot.pause()
 
         assert session.resumed_session_ids == ["session-2"]
+
+
+@pytest.mark.anyio
+async def test_tui_app_blocks_tree_picker_while_agent_is_running() -> None:
+    session = FakeSession()
+    app = TauTuiApp(session)
+    notifications: list[str] = []
+
+    def fake_notify(message: str, **kwargs: object) -> None:
+        del kwargs
+        notifications.append(message)
+
+    app._notify = fake_notify  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        app.state.running = True
+        prompt = app.query_one("#prompt")
+        prompt.value = "/tree"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.tree_branch_requests == []
+        assert prompt.value == "/tree"
+        assert not isinstance(app.screen, TreePickerScreen)
+        assert notifications == [
+            "Tau is still working. Press Escape to interrupt before using /tree."
+        ]
+
+
+@pytest.mark.anyio
+async def test_tui_app_blocks_tree_branch_selection_while_agent_is_running() -> None:
+    session = FakeSession()
+    app = TauTuiApp(session)
+    notifications: list[str] = []
+
+    def fake_notify(message: str, **kwargs: object) -> None:
+        del kwargs
+        notifications.append(message)
+
+    app._notify = fake_notify  # type: ignore[method-assign]
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt")
+        prompt.value = "/tree"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, TreePickerScreen)
+        app.state.running = True
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert session.tree_branch_requests == []
+        assert notifications == [
+            "Tau is still working. Press Escape to interrupt before using /tree."
+        ]
 
 
 @pytest.mark.anyio
@@ -4426,7 +4519,7 @@ async def test_tui_login_saves_provider_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     session = FakeSession()
     app = TauTuiApp(session)
 
@@ -4456,7 +4549,7 @@ async def test_tui_login_openai_codex_saves_oauth_credentials(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     credential_future = asyncio.get_running_loop().create_future()
 
     async def fake_login_openai_codex(**_kwargs: object) -> OAuthCredential:
@@ -4498,7 +4591,7 @@ async def test_tui_login_custom_provider_writes_catalog_and_preferences(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     session = FakeSession()
     app = TauTuiApp(session)
 
@@ -4550,7 +4643,7 @@ async def test_tui_login_preserves_existing_scoped_models_and_providers(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     tau_home = tmp_path / ".tau"
     settings = ProviderSettings(
         default_provider="local",
@@ -4589,7 +4682,7 @@ async def test_tui_login_provider_does_not_change_default_startup_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     session = FakeSession()
     app = TauTuiApp(session)
     entry = tui_app.builtin_provider_entry("openrouter")
@@ -4608,7 +4701,7 @@ async def test_tui_logout_without_stored_credentials_shows_message(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     session = FakeSession()
     app = TauTuiApp(session)
     notifications: list[tuple[str, str | None]] = []
@@ -4634,7 +4727,7 @@ async def test_tui_logout_removes_stored_api_key(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     credential_path = tmp_path / ".tau" / "credentials.json"
     FileCredentialStore(credential_path).set("openai", "stored-openai-key")
     session = FakeSession()
@@ -4666,7 +4759,7 @@ async def test_tui_logout_removes_oauth_credential(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     credential_path = tmp_path / ".tau" / "credentials.json"
     FileCredentialStore(credential_path).set_oauth(
         "openai-codex",
@@ -4703,7 +4796,7 @@ async def test_tui_logout_opens_stored_credential_provider_picker(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     FileCredentialStore(tmp_path / ".tau" / "credentials.json").set("anthropic", "stored-key")
     app = TauTuiApp(FakeSession())
 

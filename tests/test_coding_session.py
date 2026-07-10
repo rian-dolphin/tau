@@ -1,10 +1,12 @@
 import asyncio
 import json
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
 
+from conftest import isolate_home
 from tau_agent import (
     AgentMessage,
     AgentTool,
@@ -51,7 +53,7 @@ from tau_coding import (
     save_provider_settings,
 )
 from tau_coding import session as coding_session_module
-from tau_coding.session import parse_terminal_command
+from tau_coding.session import _ordered_tree_entries, parse_terminal_command
 
 
 async def _collect_session_events(session_stream: object) -> list[object]:
@@ -484,6 +486,14 @@ async def test_terminal_command_can_run_without_context(tmp_path: Path) -> None:
     assert not any(isinstance(entry, MessageEntry) for entry in entries)
 
 
+# The shell_command_prefix feature routes commands through bash only on POSIX
+# (see create_bash_tool); on Windows they run under the default shell.
+requires_posix_shell = pytest.mark.skipif(
+    sys.platform == "win32", reason="shell_command_prefix uses bash only on POSIX"
+)
+
+
+@requires_posix_shell
 @pytest.mark.anyio
 async def test_terminal_command_uses_configured_shell_command_prefix(tmp_path: Path) -> None:
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
@@ -505,6 +515,7 @@ async def test_terminal_command_uses_configured_shell_command_prefix(tmp_path: P
     assert result.added_to_context is False
 
 
+@requires_posix_shell
 @pytest.mark.anyio
 async def test_agent_bash_tool_uses_configured_shell_command_prefix(tmp_path: Path) -> None:
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
@@ -606,6 +617,8 @@ async def test_tree_can_branch_from_first_user_message_before_assistant_response
     await provider.started.wait()
 
     choices = await session.tree_choices()
+    with pytest.raises(RuntimeError, match="Tau is still working"):
+        await session.branch_to_entry(choices[0].entry_id)
 
     session.cancel()
     await task
@@ -622,6 +635,65 @@ async def test_tree_can_branch_from_first_user_message_before_assistant_response
     assert [entry.message for entry in message_entries] == [UserMessage(content="Start here")]
     assert isinstance(entries[-1], LeafEntry)
     assert entries[-1].entry_id == message_entries[0].parent_id
+
+
+@pytest.mark.anyio
+async def test_tree_choices_handles_deep_session_without_recursion_error(
+    tmp_path: Path,
+) -> None:
+    # A long conversation is a deep root-to-leaf chain of entries. Building the
+    # tree picker must not exceed Python's recursion limit. Regression for #277:
+    # "/tree" on a long session raised "maximum recursion depth exceeded".
+    depth = sys.getrecursionlimit() + 500
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    parent_id: str | None = None
+    for index in range(depth):
+        entry = MessageEntry(
+            id=f"m{index}",
+            parent_id=parent_id,
+            message=UserMessage(content=f"message {index}"),
+        )
+        await storage.append(entry)
+        parent_id = entry.id
+    await storage.append(LeafEntry(parent_id=parent_id, entry_id=parent_id))
+    session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
+
+    choices = await session.tree_choices()
+
+    assert len(choices) == depth
+    assert choices[0].entry_id == "m0"
+    assert choices[-1].entry_id == f"m{depth - 1}"
+
+
+def test_ordered_tree_entries_preserves_branch_order() -> None:
+    # Locks the traversal contract the iterative walk must preserve: emit a
+    # node's direct children before descending, then depth-first into each child.
+    entries = [
+        MessageEntry(id="A", parent_id=None, message=UserMessage(content="A")),
+        MessageEntry(id="B", parent_id=None, message=UserMessage(content="B")),
+        MessageEntry(id="C", parent_id="A", message=UserMessage(content="C")),
+        MessageEntry(id="D", parent_id="A", message=UserMessage(content="D")),
+        MessageEntry(id="E", parent_id="B", message=UserMessage(content="E")),
+        MessageEntry(id="F", parent_id="C", message=UserMessage(content="F")),
+    ]
+
+    ordered = _ordered_tree_entries(entries)
+
+    assert [entry.id for entry in ordered] == ["A", "B", "C", "D", "F", "E"]
+
+
+def test_ordered_tree_entries_terminates_on_parent_cycle() -> None:
+    # A malformed parent cycle must terminate (not hang or overflow) and still
+    # emit each entry exactly once. Guards the iterative walk's cycle safety.
+    entries = [
+        MessageEntry(id="a", parent_id="b", message=UserMessage(content="a")),
+        MessageEntry(id="b", parent_id="a", message=UserMessage(content="b")),
+    ]
+
+    ordered = _ordered_tree_entries(entries)
+
+    assert sorted(entry.id for entry in ordered) == ["a", "b"]
+    assert len(ordered) == 2
 
 
 @pytest.mark.anyio
@@ -752,7 +824,7 @@ async def test_session_cycles_thinking_level(tmp_path: Path) -> None:
 async def test_session_uses_active_model_thinking_capabilities(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
         models=("reasoner", "plain"),
@@ -2460,7 +2532,7 @@ async def test_session_switches_configured_provider(
         created_providers.append(provider)
         return provider
 
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("LOCAL_API_KEY", "test-key")
     monkeypatch.setattr(coding_session_module, "create_model_provider", create_provider)
     storage = JsonlSessionStorage(tmp_path / "session.jsonl")
@@ -2687,6 +2759,7 @@ async def test_session_toggles_and_cycles_scoped_models(
     ]
 
 
+@requires_posix_shell
 @pytest.mark.anyio
 async def test_session_resume_preserves_shell_command_prefix(tmp_path: Path) -> None:
     manager = SessionManager(TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents"))
@@ -2907,7 +2980,7 @@ async def test_session_load_falls_back_when_persisted_model_does_not_match_provi
 async def test_session_set_model_persists_default_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     provider_config = OpenAICompatibleProviderConfig(
         name="openai",
@@ -2938,7 +3011,7 @@ async def test_session_set_model_persists_default_provider_model(
 async def test_session_set_model_choice_persists_default_provider_model(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     settings = ProviderSettings(
         default_provider="openai",
@@ -2998,7 +3071,7 @@ async def test_session_set_model_choice_persists_default_provider_model(
 async def test_session_set_model_choice_switches_provider_model_directly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     monkeypatch.setenv("LOCAL_API_KEY", "local-key")
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     settings = ProviderSettings(
@@ -3063,7 +3136,7 @@ async def test_session_set_model_choice_switches_provider_model_directly(
 async def test_session_set_model_preserves_newer_provider_file_changes(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    isolate_home(monkeypatch, tmp_path)
     tau_paths = TauPaths(home=tmp_path / ".tau", agents_home=tmp_path / ".agents")
     loaded_provider = OpenAICompatibleProviderConfig(
         name="openai",
