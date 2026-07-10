@@ -9,7 +9,7 @@ import pytest
 
 from tau_agent import AssistantMessage, ToolCall, UserMessage
 from tau_agent.messages import AgentMessage
-from tau_agent.session import CustomEntry, JsonlSessionStorage
+from tau_agent.session import CustomEntry, JsonlSessionStorage, LeafEntry, MessageEntry
 from tau_agent.tools import AgentTool, AgentToolResult
 from tau_agent.types import JSONValue
 from tau_ai import FakeProvider, ProviderResponseEndEvent, ProviderResponseStartEvent
@@ -1565,6 +1565,49 @@ async def test_prompt_input_hook_source_extension(tmp_path: Path) -> None:
 
     user_messages = [m for m in session.messages if isinstance(m, UserMessage)]
     assert user_messages[0].content == "hello|extension"
+
+
+async def test_agent_events_reach_extension_after_interrupted_tool_repair(
+    tmp_path: Path,
+) -> None:
+    # Regression: load() attached the extension event fan-out to the local
+    # harness it built before _persist_loaded_interrupted_tool_repairs() could
+    # replace session._harness. Loading a session that died mid-tool-call then
+    # left extensions subscribed to the discarded harness — they silently
+    # received zero agent events for the whole session.
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    user_entry = MessageEntry(message=UserMessage(content="Read README.md"))
+    await storage.append(user_entry)
+    tool_call = ToolCall(id="call-1", name="read", arguments={"path": "README.md"})
+    assistant_entry = MessageEntry(
+        parent_id=user_entry.id,
+        message=AssistantMessage(content="I'll read it.", tool_calls=[tool_call]),
+    )
+    await storage.append(assistant_entry)
+    await storage.append(LeafEntry(parent_id=assistant_entry.id, entry_id=assistant_entry.id))
+
+    body = (
+        "EVENTS = []\n\n\n"
+        "def setup(tau):\n"
+        "    tau.on('agent_event', lambda event: EVENTS.append(event.type))\n"
+    )
+    provider = FakeProvider(
+        [
+            [
+                ProviderResponseStartEvent(model="fake"),
+                ProviderResponseEndEvent(message=AssistantMessage(content="Recovered.")),
+            ]
+        ]
+    )
+    session = await CodingSession.load(
+        _session_config(tmp_path, provider, extension_body=body)
+    )
+    module = _loaded_extension_module("integration")
+
+    _ = [event async for event in session.prompt("continue")]
+
+    assert "agent_start" in module.EVENTS  # type: ignore[attr-defined]
+    assert "agent_end" in module.EVENTS  # type: ignore[attr-defined]
 
 
 async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:

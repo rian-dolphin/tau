@@ -377,7 +377,11 @@ class CodingSession:
         session._refresh_runtime_provider()
         if fresh_extension_runtime:
             extension_runtime.bind(session)
-            extension_runtime.attach_harness_listener(harness.subscribe)
+            # Attach to session._harness, not the local `harness`:
+            # _persist_loaded_interrupted_tool_repairs() above may have
+            # replaced the harness, and listeners on the discarded one would
+            # never see an agent event.
+            extension_runtime.attach_harness_listener(session._harness.subscribe)
             # session_start is deferred: hosts emit it via
             # emit_pending_session_start() after installing their UI bridge,
             # so handlers can use notifications and dialogs (Pi starts the UI
