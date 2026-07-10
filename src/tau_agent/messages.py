@@ -93,7 +93,14 @@ class UserMessage(BaseModel):
 
 
 class AssistantMessage(BaseModel):
-    """A message authored by the assistant, optionally requesting tool calls."""
+    """A message authored by the assistant.
+
+    ``usage`` defaults to ``None`` and is **omitted from serialization when
+    None**, for the same forward-compat reason as ``UserMessage``'s custom
+    metadata: old binaries use ``extra="forbid"``, and virtually every session
+    contains an assistant message, so an always-present ``"usage": null`` key
+    would make every new session file unreadable by them.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -101,6 +108,14 @@ class AssistantMessage(BaseModel):
     content: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: Usage | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_unused_usage(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        """Drop the ``usage`` key when unset (forward compat, see class docs)."""
+        data: dict[str, Any] = handler(self)
+        if data.get("usage") is None:
+            data.pop("usage", None)
+        return data
 
 
 class ToolResultMessage(BaseModel):
