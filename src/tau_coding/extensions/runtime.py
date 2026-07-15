@@ -363,16 +363,12 @@ class ExtensionRuntime:
         except Exception as exc:  # noqa: BLE001 - a renderer must never crash the frontend
             if custom_type not in self._renderer_failures_reported:
                 self._renderer_failures_reported.add(custom_type)
-                self._record_runtime_failure(
-                    extension_name, f"message_renderer:{custom_type}", exc
-                )
+                self._record_runtime_failure(extension_name, f"message_renderer:{custom_type}", exc)
             return None
         if not isinstance(markup, str):
             if custom_type not in self._renderer_failures_reported:
                 self._renderer_failures_reported.add(custom_type)
-                self._record_bad_result(
-                    extension_name, f"message_renderer:{custom_type}", markup
-                )
+                self._record_bad_result(extension_name, f"message_renderer:{custom_type}", markup)
             return None
         return markup
 
@@ -641,9 +637,7 @@ class ExtensionRuntime:
             )
             # The wrapper always declares `on_update`; the inner tool's own
             # inspect-gate drops it for executors that do not accept it.
-            result = await tool.execute(
-                effective_arguments, signal=signal, on_update=on_update
-            )
+            result = await tool.execute(effective_arguments, signal=signal, on_update=on_update)
             return await self._run_tool_result_hooks(tool.name, effective_arguments, result)
 
         return AgentTool(

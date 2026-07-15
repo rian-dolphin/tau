@@ -367,8 +367,7 @@ class CodingSession:
             prompt_templates=resources.prompt_templates,
             context_files=resources.context_files,
             resource_diagnostics=resources.diagnostics,
-            command_registry=config.command_registry
-            or extension_runtime.build_command_registry(),
+            command_registry=config.command_registry or extension_runtime.build_command_registry(),
             pending_initial_entries=pending_initial_entries,
             extension_runtime=extension_runtime,
         )

@@ -253,9 +253,7 @@ async def _execute_tool(
     try:
         while not task.done():
             getter = asyncio.ensure_future(queue.get())
-            done, _pending = await asyncio.wait(
-                {task, getter}, return_when=asyncio.FIRST_COMPLETED
-            )
+            done, _pending = await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
             if getter in done:
                 # An update was queued; the getter safely holds it.
                 yield getter.result()

@@ -2898,9 +2898,7 @@ async def test_pending_tool_row_shows_spinner_while_running() -> None:
         first_frame = widget.selection_text[0]
         app._tick_activity()
         await pilot.pause()
-        same_widget = next(
-            w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool"
-        )
+        same_widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
         assert same_widget is widget
         assert same_widget.selection_text[0] in TOOL_SPINNER_FRAMES
         assert same_widget.selection_text[0] != first_frame
@@ -2917,9 +2915,7 @@ async def test_pending_tool_row_shows_spinner_while_running() -> None:
         # Once the result lands the static marker returns.
         await stream(
             ToolExecutionEndEvent(
-                result=AgentToolResult(
-                    tool_call_id="call-1", name="agent", ok=True, content="done"
-                )
+                result=AgentToolResult(tool_call_id="call-1", name="agent", ok=True, content="done")
             )
         )
         await pilot.pause()
@@ -6932,9 +6928,7 @@ async def test_component_consumed_escape_preempts_cancel() -> None:
         cancels: list[int] = []
         app.action_cancel = lambda: cancels.append(1)  # type: ignore[method-assign]
 
-        unsubscribe = bridge.register_key_interceptor(
-            lambda event, text: event.key == "escape"
-        )
+        unsubscribe = bridge.register_key_interceptor(lambda event, text: event.key == "escape")
         app.query_one("#prompt", PromptInput).focus()
         await pilot.pause()
 
@@ -6971,8 +6965,7 @@ async def test_component_key_interceptor_failure_degrades_to_typing() -> None:
         # Failures are keyed per-interceptor now (so a second faulty handler
         # still gets diagnosed) and notify like the other failure classes.
         assert any(
-            key.startswith("key_interceptor:")
-            for key in app._extension_component_failures_reported
+            key.startswith("key_interceptor:") for key in app._extension_component_failures_reported
         )
 
 
@@ -7120,9 +7113,7 @@ async def test_component_render_crash_is_quarantined() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        bridge.set_slot_widget(
-            "crash", lambda theme: _CrashOnRender("x", id="ext-crash")
-        )
+        bridge.set_slot_widget("crash", lambda theme: _CrashOnRender("x", id="ext-crash"))
         await pilot.pause()
         await pilot.pause()
 
@@ -7140,9 +7131,7 @@ async def test_component_mount_crash_is_quarantined() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        bridge.set_slot_widget(
-            "crash", lambda theme: _CrashOnMount("x", id="ext-crash-mount")
-        )
+        bridge.set_slot_widget("crash", lambda theme: _CrashOnMount("x", id="ext-crash-mount"))
         # A widget that crashes in on_mount never finishes mounting, so its
         # pending message never drains (pilot.pause would time out); sleep to
         # let _handle_exception run instead. The app must stay alive and the

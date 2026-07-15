@@ -360,7 +360,7 @@ def apply_tool_spinner(text: str, frame: str) -> str:
     """Show the spinner frame in place of a static invocation marker."""
     for marker in _INVOCATION_MARKERS:
         if text.startswith(marker):
-            return f"{frame} {text[len(marker):]}"
+            return f"{frame} {text[len(marker) :]}"
     return f"{frame} {text}"
 
 

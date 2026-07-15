@@ -196,9 +196,7 @@ class AnthropicProvider:
                                     finish_reason = (
                                         _string_or_empty(delta.get("stop_reason")) or finish_reason
                                     )
-                                usage = _apply_message_delta_usage(
-                                    usage, chunk.get("usage")
-                                )
+                                usage = _apply_message_delta_usage(usage, chunk.get("usage"))
                             elif event_type == "error":
                                 error = chunk.get("error")
                                 message = "Provider returned an error"
@@ -395,9 +393,7 @@ def _usage_from_message_start(raw: object) -> Usage:
         cache_write=_int_or_none(data.get("cache_creation_input_tokens")) or 0,
         cache_write_1h=cache_write_1h,
     )
-    usage.total_tokens = (
-        usage.input + usage.output + usage.cache_read + usage.cache_write
-    )
+    usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write
     return usage
 
 
@@ -423,7 +419,5 @@ def _apply_message_delta_usage(usage: Usage | None, raw: object) -> Usage | None
         thinking = _int_or_none(details.get("thinking_tokens"))
         if thinking is not None:
             usage.reasoning = thinking
-    usage.total_tokens = (
-        usage.input + usage.output + usage.cache_read + usage.cache_write
-    )
+    usage.total_tokens = usage.input + usage.output + usage.cache_read + usage.cache_write
     return usage

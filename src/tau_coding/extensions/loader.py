@@ -114,11 +114,7 @@ def discover_extensions(
                 continue
             entry_file = expanded / "extension.py"
             if entry_file.is_file():
-                add(
-                    DiscoveredExtension(
-                        name=expanded.name, path=entry_file, package_dir=expanded
-                    )
-                )
+                add(DiscoveredExtension(name=expanded.name, path=entry_file, package_dir=expanded))
                 continue
             found_any = False
             for entry in _discover_in_dir(expanded, diagnostics):
@@ -274,9 +270,7 @@ def _load_extension(
         submodule_search_locations=search_locations,
     )
     if spec is None or spec.loader is None:
-        return None, [
-            _error_diagnostic(entry, f"could not create an import spec for {entry.path}")
-        ]
+        return None, [_error_diagnostic(entry, f"could not create an import spec for {entry.path}")]
 
     module = module_from_spec(spec)
     sys.modules[module_name] = module

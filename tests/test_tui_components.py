@@ -51,12 +51,8 @@ async def test_component_multiple_slot_widgets_mount_in_call_order() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        bridge.set_slot_widget(
-            "a", lambda theme: Static("a", id="ext-a"), placement="below_prompt"
-        )
-        bridge.set_slot_widget(
-            "b", lambda theme: Static("b", id="ext-b"), placement="below_prompt"
-        )
+        bridge.set_slot_widget("a", lambda theme: Static("a", id="ext-a"), placement="below_prompt")
+        bridge.set_slot_widget("b", lambda theme: Static("b", id="ext-b"), placement="below_prompt")
         await pilot.pause()
 
         slot = app.query_one("#below-prompt-slot", Container)
@@ -72,13 +68,9 @@ async def test_component_second_main_view_replaces_first() -> None:
         await pilot.pause()
         bridge = _component_bridge(app)
 
-        first = bridge.open_main_view(
-            lambda handle, theme: Static("one", id="ext-view-one")
-        )
+        first = bridge.open_main_view(lambda handle, theme: Static("one", id="ext-view-one"))
         await pilot.pause()
-        second = bridge.open_main_view(
-            lambda handle, theme: Static("two", id="ext-view-two")
-        )
+        second = bridge.open_main_view(lambda handle, theme: Static("two", id="ext-view-two"))
         await pilot.pause()
 
         # Opening a second view closes the first handle and leaves exactly one
@@ -169,9 +161,7 @@ async def test_component_second_main_view_same_id_no_duplicate() -> None:
         bridge.open_main_view(lambda handle, theme: Static("one", id="dup-view"))
         await pilot.pause()
         # A second view sharing the viewer id, opened before the first drains.
-        second = bridge.open_main_view(
-            lambda handle, theme: Static("two", id="dup-view")
-        )
+        second = bridge.open_main_view(lambda handle, theme: Static("two", id="dup-view"))
         await pilot.pause()
         await pilot.pause()
 
@@ -243,14 +233,10 @@ async def test_component_main_view_open_close_restores_transcript() -> None:
         bridge = _component_bridge(app)
 
         # Opening a main view hides #transcript and shows only #main-slot.
-        handle = bridge.open_main_view(
-            lambda h, theme: Static("main", id="ext-main-view")
-        )
+        handle = bridge.open_main_view(lambda h, theme: Static("main", id="ext-main-view"))
         await pilot.pause()
         displayed = [
-            pane_id
-            for pane_id in ("#transcript", "#main-slot")
-            if app.query_one(pane_id).display
+            pane_id for pane_id in ("#transcript", "#main-slot") if app.query_one(pane_id).display
         ]
         assert displayed == ["#main-slot"]
 

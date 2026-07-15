@@ -638,9 +638,7 @@ async def test_agent_loop_stops_after_configured_max_turns() -> None:
     assert len(provider.calls) == 1
 
 
-def _tool_then_stop_provider(
-    tool_call: ToolCall, final_text: str = "done"
-) -> FakeProvider:
+def _tool_then_stop_provider(tool_call: ToolCall, final_text: str = "done") -> FakeProvider:
     first = AssistantMessage(content="Working on it.", tool_calls=[tool_call])
     final = AssistantMessage(content=final_text)
     return FakeProvider(

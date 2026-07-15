@@ -249,9 +249,7 @@ def test_manifest_wins_over_root_extension_py(tmp_path: Path) -> None:
         '[tool.tau]\nextensions = ["src/my_ext/extension.py"]\n', encoding="utf-8"
     )
 
-    discovered, _ = discover_extensions(
-        paths, extra_paths=(repo,), include_resource_dirs=False
-    )
+    discovered, _ = discover_extensions(paths, extra_paths=(repo,), include_resource_dirs=False)
 
     assert [entry.name for entry in discovered] == ["my_ext"]
     assert discovered[0].path == repo / "src" / "my_ext" / "extension.py"
@@ -265,9 +263,7 @@ def test_manifest_entry_named_after_file_when_not_extension_py(tmp_path: Path) -
         '[tool.tau]\nextensions = ["src/my_ext/main.py"]\n', encoding="utf-8"
     )
 
-    discovered, _ = discover_extensions(
-        paths, extra_paths=(repo,), include_resource_dirs=False
-    )
+    discovered, _ = discover_extensions(paths, extra_paths=(repo,), include_resource_dirs=False)
 
     assert [entry.name for entry in discovered] == ["main"]
     assert discovered[0].package_dir == repo / "src" / "my_ext"
@@ -311,9 +307,7 @@ def test_manifest_duplicate_entry_names_first_wins(tmp_path: Path) -> None:
     for parent in ("src", "legacy"):
         package_dir = repo / parent / "my_ext"
         package_dir.mkdir(parents=True)
-        (package_dir / "extension.py").write_text(
-            "def setup(tau):\n    pass\n", encoding="utf-8"
-        )
+        (package_dir / "extension.py").write_text("def setup(tau):\n    pass\n", encoding="utf-8")
     (repo / "pyproject.toml").write_text(
         '[tool.tau]\nextensions = ["src/my_ext/extension.py", "legacy/my_ext/extension.py"]\n',
         encoding="utf-8",
@@ -401,9 +395,7 @@ def test_manifest_invalid_declarations_are_error_diagnostics(tmp_path: Path) -> 
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "extension.py").write_text("def setup(tau):\n    pass\n", encoding="utf-8")
-    (repo / "pyproject.toml").write_text(
-        "[tool.tau]\nextensions = 3\n", encoding="utf-8"
-    )
+    (repo / "pyproject.toml").write_text("[tool.tau]\nextensions = 3\n", encoding="utf-8")
 
     discovered, diagnostics = discover_extensions(
         paths, extra_paths=(repo,), include_resource_dirs=False
@@ -411,8 +403,7 @@ def test_manifest_invalid_declarations_are_error_diagnostics(tmp_path: Path) -> 
 
     assert [entry.name for entry in discovered] == ["repo"]
     assert any(
-        diag.severity == "error" and "list of file paths" in diag.message
-        for diag in diagnostics
+        diag.severity == "error" and "list of file paths" in diag.message for diag in diagnostics
     )
 
 
@@ -429,8 +420,7 @@ def test_manifest_parse_failure_is_warning_with_fallback(tmp_path: Path) -> None
 
     assert [entry.name for entry in discovered] == ["repo"]
     assert any(
-        diag.severity == "warning" and "could not parse" in diag.message
-        for diag in diagnostics
+        diag.severity == "warning" and "could not parse" in diag.message for diag in diagnostics
     )
 
 
@@ -448,8 +438,7 @@ def test_helper_modules_stay_namespaced_in_sys_modules(tmp_path: Path) -> None:
 
     assert "helper" not in sys.modules
     assert any(
-        name.startswith("tau_extension_pkg_ns") and name.endswith(".helper")
-        for name in sys.modules
+        name.startswith("tau_extension_pkg_ns") and name.endswith(".helper") for name in sys.modules
     )
 
 
@@ -461,9 +450,7 @@ def test_broken_extension_is_isolated(tmp_path: Path) -> None:
     result = load_extensions(paths)
 
     assert [ext.name for ext in result.extensions] == ["works"]
-    assert any(
-        diag.name == "broken" and diag.severity == "error" for diag in result.diagnostics
-    )
+    assert any(diag.name == "broken" and diag.severity == "error" for diag in result.diagnostics)
 
 
 def test_extension_without_setup_is_rejected(tmp_path: Path) -> None:
@@ -552,9 +539,7 @@ async def test_extension_tool_overrides_builtin_by_name(tmp_path: Path) -> None:
     async def builtin_read(arguments: object, signal: object = None) -> AgentToolResult:
         return AgentToolResult(tool_call_id="", name="read", ok=True, content="builtin")
 
-    builtin = AgentTool(
-        name="read", description="builtin", input_schema={}, executor=builtin_read
-    )
+    builtin = AgentTool(name="read", description="builtin", input_schema={}, executor=builtin_read)
 
     runtime = _runtime_with(paths)
     composed = runtime.compose_tools([builtin])
@@ -604,10 +589,7 @@ def test_extension_command_cannot_shadow_builtin(tmp_path: Path) -> None:
     _write_extension(
         _user_extensions_dir(paths),
         "shadow",
-        (
-            "def setup(tau):\n"
-            "    tau.register_command('model', lambda args, context: 'hijacked')\n"
-        ),
+        ("def setup(tau):\n    tau.register_command('model', lambda args, context: 'hijacked')\n"),
     )
 
     runtime = _runtime_with(paths)
@@ -682,9 +664,11 @@ async def test_tool_call_hook_can_block(tmp_path: Path) -> None:
     api = _register_inline_extension(runtime, "guard")
     api.on(
         "tool_call",
-        lambda event: ToolCallHookResult(block=True, reason="not allowed")
-        if event.tool_name == "danger"
-        else None,
+        lambda event: (
+            ToolCallHookResult(block=True, reason="not allowed")
+            if event.tool_name == "danger"
+            else None
+        ),
     )
 
     tool = _make_tool("danger", content="ran")
@@ -1418,10 +1402,7 @@ async def test_session_exposes_extension_tools_and_commands(tmp_path: Path) -> N
 
 
 async def test_extension_guideline_reaches_system_prompt(tmp_path: Path) -> None:
-    body = (
-        "def setup(tau):\n"
-        "    tau.add_prompt_guideline('Never commit directly to main')\n"
-    )
+    body = "def setup(tau):\n    tau.add_prompt_guideline('Never commit directly to main')\n"
     session = await CodingSession.load(
         _session_config(tmp_path, FakeProvider([]), extension_body=body)
     )
@@ -1476,8 +1457,7 @@ async def test_session_start_handler_can_notify_through_attached_bridge(
     tmp_path: Path,
 ) -> None:
     body = (
-        "def setup(tau):\n"
-        "    tau.on('session_start', lambda event: tau.notify('loaded', 'info'))\n"
+        "def setup(tau):\n    tau.on('session_start', lambda event: tau.notify('loaded', 'info'))\n"
     )
     session = await CodingSession.load(
         _session_config(tmp_path, FakeProvider([]), extension_body=body)
@@ -1502,9 +1482,7 @@ async def test_input_handled_prevents_agent_run(tmp_path: Path) -> None:
         "    tau.on('input', _hook)\n"
     )
     provider = FakeProvider([])
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
 
     events = [event async for event in session.prompt("intercept this")]
 
@@ -1532,9 +1510,7 @@ async def test_prompt_input_hook_defaults_to_interactive(tmp_path: Path) -> None
             ]
         ]
     )
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
 
     _ = [event async for event in session.prompt("hello")]
 
@@ -1560,9 +1536,7 @@ async def test_prompt_input_hook_source_extension(tmp_path: Path) -> None:
             ]
         ]
     )
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
 
     _ = [event async for event in session.prompt("hello", source="extension")]
 
@@ -1602,9 +1576,7 @@ async def test_agent_events_reach_extension_after_interrupted_tool_repair(
             ]
         ]
     )
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
     module = _loaded_extension_module("integration")
 
     _ = [event async for event in session.prompt("continue")]
@@ -1642,16 +1614,12 @@ async def test_extension_tool_call_block_reaches_model(tmp_path: Path) -> None:
             ],
         ]
     )
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
 
     [event async for event in session.prompt("run ls")]
 
     tool_results = [
-        message
-        for message in session.messages
-        if getattr(message, "role", None) == "tool"
+        message for message in session.messages if getattr(message, "role", None) == "tool"
     ]
     assert len(tool_results) == 1
     assert tool_results[0].ok is False
@@ -1694,9 +1662,7 @@ async def test_custom_message_metadata_survives_session_reload(tmp_path: Path) -
 async def test_append_entry_persists_on_active_path(tmp_path: Path) -> None:
     body = HELLO_TOOL_EXTENSION
     provider = FakeProvider([])
-    session = await CodingSession.load(
-        _session_config(tmp_path, provider, extension_body=body)
-    )
+    session = await CodingSession.load(_session_config(tmp_path, provider, extension_body=body))
 
     await session.append_custom_entry("test:records", {"value": 7})
 
@@ -1919,9 +1885,7 @@ async def test_inflight_handler_touching_stale_api_records_diagnostic(
     # The ExtensionError is contained by the handler try/except and surfaces
     # as a normal runtime diagnostic instead of crashing dispatch.
     assert outcome.handled is False
-    assert any(
-        "stale after reload" in diagnostic.message for diagnostic in runtime.diagnostics
-    )
+    assert any("stale after reload" in diagnostic.message for diagnostic in runtime.diagnostics)
 
 
 # -- custom message renderers -------------------------------------------------
@@ -1942,9 +1906,7 @@ def test_render_custom_message_uses_registered_renderer(tmp_path: Path) -> None:
 
     api.register_message_renderer("subagent-notification", render)
 
-    markup = runtime.render_custom_message(
-        "subagent-notification", "raw", {"label": "done"}, True
-    )
+    markup = runtime.render_custom_message("subagent-notification", "raw", {"label": "done"}, True)
 
     assert markup == "[bold]done[/bold]"
     assert seen[0][0].custom_type == "subagent-notification"
@@ -2126,9 +2088,7 @@ def test_render_tool_result_swallows_errors_and_reports_once(tmp_path: Path) -> 
 def test_render_tool_result_rejects_non_string_result(tmp_path: Path) -> None:
     runtime = ExtensionRuntime()
     api = _inline_api(runtime, "subagents")
-    api.register_tool(
-        _renderable_tool("agent", render_result=lambda result, *, expanded: 42)
-    )
+    api.register_tool(_renderable_tool("agent", render_result=lambda result, *, expanded: 42))
 
     assert runtime.render_tool_result(_tool_result("agent"), False) is None
     assert any("render_result:agent" in d.message for d in runtime.diagnostics)

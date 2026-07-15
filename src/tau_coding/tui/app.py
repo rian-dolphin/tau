@@ -209,9 +209,7 @@ class _TuiExtensionUiBridge:
     ) -> str | None:
         """Show a modal picker; return the choice, or None on cancel/timeout."""
         theme = self._app.tui_settings.resolved_theme
-        screen: ModalScreen[str | None] = ExtensionSelectScreen(
-            title, options, theme=theme
-        )
+        screen: ModalScreen[str | None] = ExtensionSelectScreen(title, options, theme=theme)
         return await self._run_dialog(screen, default=None, timeout=timeout)
 
     async def confirm(
@@ -235,9 +233,7 @@ class _TuiExtensionUiBridge:
     ) -> str | None:
         """Show a modal text prompt; return the text, or None on cancel/timeout."""
         theme = self._app.tui_settings.resolved_theme
-        screen: ModalScreen[str | None] = ExtensionInputScreen(
-            title, placeholder, theme=theme
-        )
+        screen: ModalScreen[str | None] = ExtensionInputScreen(title, placeholder, theme=theme)
         return await self._run_dialog(screen, default=None, timeout=timeout)
 
     # -- component seam -- pass-through to the app ----------------------------
@@ -278,9 +274,7 @@ class _TuiExtensionUiBridge:
         """Open a full main-area extension view (display-toggled, not modal)."""
         return self._app._open_extension_main_view(factory)
 
-    def register_key_interceptor(
-        self, handler: KeyInterceptor
-    ) -> Callable[[], None]:
+    def register_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
         """Register a pre-dispatch key hook; return an unsubscribe callable.
 
         Ports Pi's ``onTerminalInput``. The handler is consulted in
@@ -3012,9 +3006,7 @@ class TauTuiApp(App[None]):
             self._optimistic_user_messages.append((run_id, text))
             await self._append_optimistic_user_message(text)
         self._prompt_worker = self.run_worker(
-            self._run_prompt(
-                text, run_id, source=source, custom_type=custom_type, details=details
-            ),
+            self._run_prompt(text, run_id, source=source, custom_type=custom_type, details=details),
             exclusive=True,
         )
 
@@ -3161,9 +3153,7 @@ class TauTuiApp(App[None]):
         except NoMatches:
             return ""
 
-    def _register_extension_key_interceptor(
-        self, handler: KeyInterceptor
-    ) -> Callable[[], None]:
+    def _register_extension_key_interceptor(self, handler: KeyInterceptor) -> Callable[[], None]:
         """Register a pre-dispatch key interceptor; return an unsubscribe fn."""
         self._extension_key_interceptors.append(handler)
 
@@ -3452,15 +3442,13 @@ class TauTuiApp(App[None]):
             handle.widget if handle is not None else None,
             self._extension_main_view_mounted,
         )
-        for widget in main_widgets:
-            if widget is not None and id(widget) not in seen:
-                seen.add(id(widget))
-                widgets.append(widget)
+        for main_widget in main_widgets:
+            if main_widget is not None and id(main_widget) not in seen:
+                seen.add(id(main_widget))
+                widgets.append(main_widget)
         return tuple(widgets)
 
-    def _extension_root_for(
-        self, widget: Widget, tracked: tuple[Widget, ...]
-    ) -> Widget | None:
+    def _extension_root_for(self, widget: Widget, tracked: tuple[Widget, ...]) -> Widget | None:
         """Return the tracked extension root that owns ``widget``, if any."""
         node: Widget | None = widget
         while node is not None:
@@ -3504,8 +3492,7 @@ class TauTuiApp(App[None]):
         with suppress(Exception):
             culprit.disabled = True
         if (
-            self._extension_main_view is not None
-            and self._extension_main_view.widget is culprit
+            self._extension_main_view is not None and self._extension_main_view.widget is culprit
         ) or self._extension_main_view_mounted is culprit:
             if self._extension_main_view_mounted is culprit:
                 self._extension_main_view_mounted = None
@@ -3522,9 +3509,7 @@ class TauTuiApp(App[None]):
                     tracker.pop(key, None)
             with suppress(Exception):
                 culprit.remove()
-        self._record_extension_component_failure(
-            f"render:{id(culprit)}", error, notify=True
-        )
+        self._record_extension_component_failure(f"render:{id(culprit)}", error, notify=True)
         return True
 
     def _handle_exception(self, error: Exception) -> None:
@@ -3556,9 +3541,7 @@ class TauTuiApp(App[None]):
         with suppress(Exception):
             self.log.error(
                 f"Extension component failed ({context}):\n"
-                + "".join(
-                    traceback.format_exception(type(error), error, error.__traceback__)
-                )
+                + "".join(traceback.format_exception(type(error), error, error.__traceback__))
             )
         if context in self._extension_component_failures_reported:
             return
@@ -3671,9 +3654,7 @@ class TauTuiApp(App[None]):
                     self._sync_text_selection_state()
                     self._refresh_chrome()
                     continue
-                if self._replace_transformed_optimistic_user_message(
-                    event, run_id=active_run_id
-                ):
+                if self._replace_transformed_optimistic_user_message(event, run_id=active_run_id):
                     self._sync_text_selection_state()
                     continue
                 if not (_is_user_message_end_event(event) and self.screen_stack):
@@ -3751,15 +3732,15 @@ class TauTuiApp(App[None]):
             return
         if isinstance(event, ToolExecutionUpdateEvent):
             await transcript.finish_assistant_message()
-            item = self.state.find_tool_item(event.tool_call_id)
-            if item is not None:
-                expanded = self.state.show_tool_results or item.always_show_tool_result
+            updated_item = self.state.find_tool_item(event.tool_call_id)
+            if updated_item is not None:
+                expanded = self.state.show_tool_results or updated_item.always_show_tool_result
                 await transcript.update_item(
-                    item,
+                    updated_item,
                     theme=theme,
                     show_tool_results=expanded,
-                    invocation=self.state.resolve_tool_invocation(item),
-                    result_markup=self.state.resolve_tool_result(item, expanded=expanded),
+                    invocation=self.state.resolve_tool_invocation(updated_item),
+                    result_markup=self.state.resolve_tool_result(updated_item, expanded=expanded),
                 )
             self._refresh_chrome()
             return
