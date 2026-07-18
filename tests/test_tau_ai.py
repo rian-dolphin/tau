@@ -10,6 +10,7 @@ from tau_agent import (
     AssistantMessage,
     SimpleCancellationToken,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
@@ -29,6 +30,7 @@ from tau_ai import (
     OpenAICodexProvider,
     OpenAICompatibleConfig,
     OpenAICompatibleProvider,
+    RuntimeModelLimits,
     TextDeltaEvent,
     ThinkingDeltaEvent,
     ToolCallEndEvent,
@@ -502,16 +504,62 @@ async def test_openai_compatible_provider_streams_reasoning_content() -> None:
         "thinking_start",
         "thinking_delta",
         "thinking_delta",
+        "thinking_end",
         "text_start",
         "text_delta",
         "text_end",
-        "thinking_end",
         "done",
     ]
     thinking_events = [event for event in events if isinstance(event, ThinkingDeltaEvent)]
     assert [event.delta for event in thinking_events] == ["plan ", "steps"]
     assert isinstance(events[-1], AssistantDoneEvent)
     assert events[-1].message.text == "done"
+    assert [block.type for block in events[-1].message.content] == ["thinking", "text"]
+    assert events[-1].message.thinking_text == "plan steps"
+    thinking = events[-1].message.content[0]
+    assert isinstance(thinking, ThinkingContent)
+    assert thinking.thinking_signature == "reasoning_content"
+
+
+@pytest.mark.anyio
+async def test_openai_compatible_provider_replays_persisted_reasoning() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text=(
+                'data: {"choices":[{"delta":{"content":"next"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    prior = AssistantMessage(
+        content=[
+            ThinkingContent(thinking="prior plan", thinking_signature="reasoning_content"),
+            TextContent(text="prior answer"),
+        ]
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICompatibleProvider(
+            OpenAICompatibleConfig(api_key="test-key", base_url="https://example.test/v1"),
+            client=client,
+        )
+        await _collect(
+            provider.stream_response(
+                model="test-model",
+                system="You are Tau.",
+                messages=[UserMessage(content="first"), prior],
+                tools=[],
+            )
+        )
+
+    payload = loads(requests[0].content)
+    replay = payload["messages"][-1]
+    assert replay["content"] == "prior answer"
+    assert replay["reasoning_content"] == "prior plan"
 
 
 @pytest.mark.anyio
@@ -736,6 +784,61 @@ async def test_openai_compatible_provider_includes_plain_http_error_body_in_mess
         "body": "bad request details",
         "attempts": 1,
     }
+
+
+@pytest.mark.anyio
+async def test_openai_codex_provider_discovers_and_caches_live_model_limits() -> None:
+    requests: list[httpx.Request] = []
+
+    async def credentials() -> OpenAICodexCredentials:
+        return OpenAICodexCredentials(access_token="access-token", account_id="account-1")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "slug": "gpt-5.6-sol",
+                        "context_window": 372_000,
+                        "max_context_window": 372_000,
+                        "effective_context_window_percent": 95,
+                        "auto_compact_token_limit": 330_000,
+                        "max_output_tokens": 128_000,
+                    },
+                    {"slug": "invalid", "context_window": -1},
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        provider = OpenAICodexProvider(
+            OpenAICodexConfig(
+                credential_resolver=credentials,
+                base_url="https://chatgpt.test/backend-api",
+                client_version="0.2.0",
+            ),
+            client=client,
+        )
+
+        limits = await provider.discover_model_limits("gpt-5.6-sol")
+        cached = await provider.discover_model_limits("gpt-5.6-sol")
+
+    assert limits == RuntimeModelLimits(
+        context_window=372_000,
+        max_output_tokens=128_000,
+        effective_context_window_percent=95,
+        auto_compact_token_limit=330_000,
+    )
+    assert cached == limits
+    assert len(requests) == 1
+    assert str(requests[0].url) == (
+        "https://chatgpt.test/backend-api/codex/models?client_version=0.2.0"
+    )
+    assert requests[0].headers["authorization"] == "Bearer access-token"
+    assert requests[0].headers["chatgpt-account-id"] == "account-1"
+    assert requests[0].headers["accept"] == "application/json"
 
 
 @pytest.mark.anyio
@@ -1006,10 +1109,10 @@ async def test_openai_codex_provider_streams_reasoning_deltas() -> None:
         "thinking_start",
         "thinking_delta",
         "thinking_delta",
+        "thinking_end",
         "text_start",
         "text_delta",
         "text_end",
-        "thinking_end",
         "done",
     ]
     thinking_events = [event for event in events if isinstance(event, ThinkingDeltaEvent)]
@@ -1285,10 +1388,10 @@ async def test_anthropic_provider_streams_thinking_deltas() -> None:
         "thinking_start",
         "thinking_delta",
         "thinking_delta",
+        "thinking_end",
         "text_start",
         "text_delta",
         "text_end",
-        "thinking_end",
         "done",
     ]
     thinking_events = [event for event in events if isinstance(event, ThinkingDeltaEvent)]
@@ -1690,10 +1793,10 @@ async def test_responses_api_streams_reasoning_summary_as_thinking() -> None:
         "start",
         "thinking_start",
         "thinking_delta",
+        "thinking_end",
         "text_start",
         "text_delta",
         "text_end",
-        "thinking_end",
         "done",
     ]
     thinking = next(e for e in events if isinstance(e, ThinkingDeltaEvent))

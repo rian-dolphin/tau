@@ -13,6 +13,8 @@ from tau_agent.messages import (
     BranchSummaryMessage,
     CompactionSummaryMessage,
     CustomMessage,
+    TextContent,
+    ThinkingContent,
     ToolResultMessage,
     UserMessage,
 )
@@ -27,11 +29,8 @@ TOOL_RESULT_PREVIEW_LINES = 8
 TOOL_PATCH_PREVIEW_LINES = 32
 TOOL_RESULT_PREVIEW_CHARS = 2_000
 TERMINAL_COMMAND_OUTPUT_PREVIEW_LINES = 120
-TOOL_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
-# Static invocation markers the spinner stands in for while a tool runs.
-_INVOCATION_MARKERS = ("→ ", "▸ ")
-# Show the live elapsed time on an executing tool row once it stops being
-# instant; quick reads/edits never flash a "(0s)".
+# Show live elapsed time on an executing tool row once it stops being instant;
+# quick reads/edits never flash a "(0s)".
 TOOL_TIMER_MIN_SECONDS = 1.0
 
 
@@ -71,7 +70,6 @@ class TuiState:
     custom_renderer: CustomMessageMarkup | None = None
     tool_call_renderer: ToolCallMarkup | None = None
     tool_result_renderer: ToolResultMarkup | None = None
-    tool_spinner: str | None = None
 
     def add_item(
         self,
@@ -114,22 +112,17 @@ class TuiState:
         Resolved lazily at render time (like custom markup) so tool calls
         restored before the extension runtime connects still pick up their
         tool's `render_call` on the next redraw. ``None`` means "no renderer"
-        and the caller falls back to the generic ``item.text``. While a tool
-        is still executing and ``tool_spinner`` is set, the current spinner
-        frame stands in for the invocation's static marker.
+        and the caller falls back to the generic ``item.text``.
         """
         if item.role != "tool":
             return None
         line: str | None = None
         if item.tool_name is not None and self.tool_call_renderer is not None:
             line = self.tool_call_renderer(item.tool_name, item.tool_arguments or {})
-        if self.tool_spinner and item.tool_result_text is None:
-            line = apply_tool_spinner(line if line is not None else item.text, self.tool_spinner)
-            if item.started_at is not None:
-                elapsed = time.monotonic() - item.started_at
-                if elapsed >= TOOL_TIMER_MIN_SECONDS:
-                    line = f"{line} ({format_elapsed(elapsed)})"
-            return line
+        if item.tool_result_text is None and item.started_at is not None:
+            elapsed = time.monotonic() - item.started_at
+            if elapsed >= TOOL_TIMER_MIN_SECONDS:
+                return f"{line if line is not None else item.text} ({format_elapsed(elapsed)})"
         return line
 
     def resolve_tool_result(self, item: ChatItem, *, expanded: bool) -> str | None:
@@ -304,12 +297,10 @@ class TuiState:
                     details=message.details if isinstance(message.details, dict) else None,
                 )
             elif isinstance(message, AssistantMessage):
-                if message.thinking_text:
-                    self.add_item("thinking", message.thinking_text)
-                if message.text:
-                    self.add_item("assistant", message.text)
-                for tool_call in message.tool_calls:
-                    self.add_tool_call(tool_call)
+                if message.stop_reason in {"error", "aborted"}:
+                    self.add_assistant_error(message)
+                else:
+                    self.add_assistant_message(message)
             elif isinstance(message, ToolResultMessage):
                 self.record_tool_result(
                     message.tool_call_id,
@@ -329,6 +320,30 @@ class TuiState:
                     "Compaction summary (Ctrl+O to expand)",
                     tool_result_text=message.summary,
                 )
+
+    def add_assistant_message(
+        self,
+        message: AssistantMessage,
+        *,
+        include_tool_calls: bool = True,
+    ) -> None:
+        """Project canonical assistant blocks into display state in order."""
+        for block in message.content:
+            if isinstance(block, ThinkingContent):
+                if block.thinking:
+                    self.add_item("thinking", block.thinking)
+            elif isinstance(block, TextContent):
+                if block.text:
+                    self.add_item("assistant", block.text)
+            elif include_tool_calls:
+                self.add_tool_call(block)
+
+    def add_assistant_error(self, message: AssistantMessage) -> None:
+        """Project any partial response followed by its terminal error."""
+        self.add_assistant_message(message, include_tool_calls=False)
+        text = message.error_message or "Error"
+        self.error = text
+        self.add_item("error", f"Error: {text}")
 
     def _read_skill_name(self, tool_call: ToolCall) -> str | None:
         if tool_call.name != "read":
@@ -370,14 +385,6 @@ def format_elapsed(seconds: float) -> str:
         return f"{minutes}m {secs}s"
     hours, minutes = divmod(minutes, 60)
     return f"{hours}h {minutes}m"
-
-
-def apply_tool_spinner(text: str, frame: str) -> str:
-    """Show the spinner frame in place of a static invocation marker."""
-    for marker in _INVOCATION_MARKERS:
-        if text.startswith(marker):
-            return f"{frame} {text[len(marker) :]}"
-    return f"{frame} {text}"
 
 
 def format_tool_call_block(tool_call: ToolCall) -> str:

@@ -117,6 +117,8 @@ async def test_agent_loop_nests_thinking_events_without_losing_final_message() -
     ]
     assert [event.delta for event in nested] == ["hidden ", "reasoning"]
     assert messages[-1] == assistant
+    # The final provider message is the canonical persistence boundary.
+    assert isinstance(messages[-1], AssistantMessage)
 
 
 @pytest.mark.anyio
@@ -268,6 +270,49 @@ async def test_agent_loop_converts_provider_error_to_assistant_error_message() -
     assert isinstance(error, AssistantMessage)
     assert error.stop_reason == "error"
     assert error.error_message == "provider failed"
+
+
+@pytest.mark.anyio
+async def test_agent_loop_excludes_empty_failed_assistant_from_next_provider_call() -> None:
+    messages: list[AgentMessage] = []
+    recovered = AssistantMessage(content="recovered", model="fake")
+    provider = FakeProvider(
+        [
+            [assistant_error("provider failed")],
+            [assistant_start(), assistant_done(recovered)],
+        ]
+    )
+
+    await _collect(
+        run_agent_loop(
+            provider=provider,
+            model="fake",
+            system="You are Tau.",
+            messages=messages,
+            tools=[],
+            prompts=[UserMessage(content="hello")],
+        )
+    )
+    failed = messages[-1]
+    assert isinstance(failed, AssistantMessage)
+    assert failed.stop_reason == "error"
+
+    await _collect(
+        run_agent_loop(
+            provider=provider,
+            model="fake",
+            system="You are Tau.",
+            messages=messages,
+            tools=[],
+            prompts=[UserMessage(content="continue")],
+        )
+    )
+
+    assert failed in messages
+    replayed = provider.calls[1][2]
+    assert [message.text for message in replayed] == ["hello", "continue"]
+    assert failed not in replayed
+    assert messages[-1] is recovered
 
 
 @pytest.mark.anyio

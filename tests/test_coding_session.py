@@ -13,6 +13,7 @@ from tau_agent import (
     AgentTool,
     AssistantMessage,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolResultMessage,
     UserMessage,
@@ -27,7 +28,7 @@ from tau_agent.session import (
     SessionInfoEntry,
     ThinkingLevelChangeEntry,
 )
-from tau_ai import CancellationToken, FakeProvider, ModelProvider
+from tau_ai import CancellationToken, FakeProvider, ModelProvider, RuntimeModelLimits
 from tau_ai.events import AssistantMessageEvent
 from tau_coding import (
     CodingSession,
@@ -85,6 +86,26 @@ class SwitchableFakeProvider:
 
     async def aclose(self) -> None:
         self.closed = True
+
+
+class ModelLimitsFakeProvider(FakeProvider):
+    def __init__(
+        self,
+        scripts: list[list[AssistantMessageEvent]],
+        *,
+        limits: RuntimeModelLimits | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        super().__init__(scripts)
+        self.limits = limits
+        self.error = error
+        self.discovery_calls: list[str] = []
+
+    async def discover_model_limits(self, model: str) -> RuntimeModelLimits | None:
+        self.discovery_calls.append(model)
+        if self.error is not None:
+            raise self.error
+        return self.limits
 
 
 class RaisingProvider:
@@ -656,6 +677,32 @@ async def test_tree_can_branch_from_first_user_message_before_assistant_response
     assert message_entries[1].message.stop_reason == "error"
     assert isinstance(entries[-1], LeafEntry)
     assert entries[-1].entry_id == message_entries[0].parent_id
+
+
+@pytest.mark.anyio
+async def test_tree_choices_label_structured_tool_calls_without_exposing_thinking(
+    tmp_path: Path,
+) -> None:
+    storage = JsonlSessionStorage(tmp_path / "session.jsonl")
+    entry = MessageEntry(
+        id="assistant",
+        message=AssistantMessage(
+            content=[
+                ThinkingContent(thinking="Inspect the project before answering."),
+                ToolCall(id="call-1", name="read", arguments={"path": "README.md"}),
+                ToolCall(id="call-2", name="bash", arguments={"command": "git status"}),
+            ]
+        ),
+    )
+    await storage.append(entry)
+    await storage.append(LeafEntry(entry_id=entry.id))
+    session = await CodingSession.load(_config(tmp_path, FakeProvider([]), storage))
+
+    choices = await session.tree_choices()
+
+    assert len(choices) == 1
+    assert choices[0].label == "tool call: read, bash"
+    assert choices[0].is_tool_call is True
 
 
 @pytest.mark.anyio
@@ -1969,7 +2016,11 @@ async def test_session_loads_and_expands_skills(tmp_path: Path) -> None:
 
     _events = await _collect_session_events(session.prompt("/skill:testing add tests"))
 
-    assert [skill.name for skill in session.skills] == ["testing"]
+    assert {skill.name for skill in session.skills} == {
+        "create-tau-extension",
+        "tau-model-catalog",
+        "testing",
+    }
     assert '<skill name="testing" location="' in provider.calls[0][2][0].content
     assert "References are relative to" in provider.calls[0][2][0].content
     assert provider.calls[0][2][0].content.endswith("</skill>\n\nadd tests")
@@ -2186,7 +2237,7 @@ async def test_session_loads_with_resource_diagnostics_instead_of_failing(
 
     session = await CodingSession.load(config)
 
-    assert [skill.name for skill in session.skills] == ["good"]
+    assert "good" in {skill.name for skill in session.skills}
     assert len(session.resource_diagnostics) == 1
     assert (
         "bare .md files are no longer treated as skills" in session.resource_diagnostics[0].message
@@ -2215,7 +2266,10 @@ async def test_session_reload_refreshes_resources_and_system_prompt(tmp_path: Pa
             resource_paths=TauResourcePaths(root=resource_root, agents_root=None),
         )
     )
-    assert session.skills == ()
+    assert {skill.name for skill in session.skills} == {
+        "create-tau-extension",
+        "tau-model-catalog",
+    }
     assert session.context_files == ()
 
     skills_dir = resource_root / "skills" / "testing"
@@ -2233,11 +2287,15 @@ async def test_session_reload_refreshes_resources_and_system_prompt(tmp_path: Pa
     entries_after = await storage.read_all()
     _events = await _collect_session_events(session.prompt("Hello"))
 
-    assert summary.skills.after == 1
+    assert summary.skills.after == 3
     assert summary.context_files.after == 1
     assert summary.system_prompt_rebuilt is True
     assert entries_after == entries_before
-    assert [skill.name for skill in session.skills] == ["testing"]
+    assert {skill.name for skill in session.skills} == {
+        "create-tau-extension",
+        "tau-model-catalog",
+        "testing",
+    }
     assert [Path(context_file.path).name for context_file in session.context_files] == ["AGENTS.md"]
     assert "Reloaded project rules." in provider.calls[0][1]
     assert "<name>testing</name>" in provider.calls[0][1]
@@ -2505,6 +2563,82 @@ async def test_session_auto_compacts_with_pi_style_default_threshold(
 
 
 @pytest.mark.anyio
+async def test_session_uses_live_provider_limits_for_compaction_threshold(
+    tmp_path: Path,
+) -> None:
+    provider = ModelLimitsFakeProvider(
+        [],
+        limits=RuntimeModelLimits(
+            context_window=372_000,
+            max_output_tokens=128_000,
+            effective_context_window_percent=95,
+        ),
+    )
+    settings = ProviderSettings(
+        default_provider="openai-codex",
+        providers=(
+            OpenAICodexProviderConfig(
+                models=("gpt-5.6-sol",),
+                default_model="gpt-5.6-sol",
+                context_windows={"gpt-5.6-sol": 272_000},
+            ),
+        ),
+    )
+
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=provider,
+            model="gpt-5.6-sol",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "session.jsonl"),
+            cwd=tmp_path,
+            provider_name="openai-codex",
+            provider_settings=settings,
+        )
+    )
+
+    assert provider.discovery_calls == ["gpt-5.6-sol"]
+    assert session.context_window_tokens == 372_000
+    assert session.auto_compact_token_threshold == 334_800
+    assert session.context_window_source == "provider live catalog"
+    assert session.model_limits_discovery_error is None
+
+
+@pytest.mark.anyio
+async def test_session_falls_back_when_live_model_limit_discovery_fails(
+    tmp_path: Path,
+) -> None:
+    provider = ModelLimitsFakeProvider([], error=RuntimeError("catalog unavailable"))
+    settings = ProviderSettings(
+        default_provider="openai-codex",
+        providers=(
+            OpenAICodexProviderConfig(
+                models=("gpt-5.6-sol",),
+                default_model="gpt-5.6-sol",
+                context_windows={"gpt-5.6-sol": 272_000},
+            ),
+        ),
+    )
+
+    session = await CodingSession.load(
+        CodingSessionConfig(
+            provider=provider,
+            model="gpt-5.6-sol",
+            system="You are Tau.",
+            storage=JsonlSessionStorage(tmp_path / "session.jsonl"),
+            cwd=tmp_path,
+            provider_name="openai-codex",
+            provider_settings=settings,
+        )
+    )
+
+    assert session.context_window_tokens == 272_000
+    assert session.auto_compact_token_threshold == 255_616
+    assert session.context_window_source == "configured catalog"
+    assert session.model_limits_discovery_error == "RuntimeError: catalog unavailable"
+
+
+@pytest.mark.anyio
 async def test_session_compacts_and_retries_once_after_context_overflow(
     tmp_path: Path,
 ) -> None:
@@ -2552,9 +2686,15 @@ async def test_session_compacts_and_retries_once_after_context_overflow(
         "Second answer",
         "Trigger overflow.",
     ]
-    overflow_error = provider.calls[4][2][4]
-    assert isinstance(overflow_error, AssistantMessage)
-    assert overflow_error.stop_reason == "error"
+    assert len(provider.calls[4][2]) == 4
+    overflow_errors = [
+        entry.message
+        for entry in entries
+        if entry.type == "message"
+        and isinstance(entry.message, AssistantMessage)
+        and entry.message.stop_reason == "error"
+    ]
+    assert len(overflow_errors) == 1
 
 
 @pytest.mark.anyio

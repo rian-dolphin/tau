@@ -19,6 +19,11 @@ work continuing from another tab.
 Clicking anywhere in the window returns focus to the prompt, so you can scroll
 the transcript and keep typing without tabbing back.
 
+If a provider request fails after retries, Tau shows the failure as an explicit
+error block in the transcript. You can submit another prompt without starting a
+new session; empty failed provider turns are retained for diagnostics but are not
+replayed to the model as invalid conversation history.
+
 ## Cancelling and steering a run
 
 While the agent is working you don't have to wait:
@@ -70,6 +75,11 @@ a path like `@src/app.py`. Tau skips hidden and generated directories (`.git`,
 `.venv`, `node_modules`, `__pycache__`, `build`, `dist`).
 
 ## Tool output
+
+Tool calls keep a static marker in the transcript while they run: orange means
+in progress, green means success, and red means failure. The prompt-area activity
+indicator provides the run-wide animation without adding a second spinner to each
+tool row.
 
 Tool results (like long `read` or `bash` output) render as compact previews so
 the transcript stays readable. Toggle full tool output with **Ctrl+O**.

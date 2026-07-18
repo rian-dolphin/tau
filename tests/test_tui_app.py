@@ -28,6 +28,7 @@ from tau_agent import (
     MessageStartEvent,
     MessageUpdateEvent,
     TextContent,
+    ThinkingContent,
     ToolCall,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
@@ -96,9 +97,10 @@ from tau_coding.tui.config import (
     TAU_LIGHT_THEME,
     TuiKeybindings,
     TuiSettings,
+    TuiTheme,
     tui_settings_path,
 )
-from tau_coding.tui.state import TOOL_SPINNER_FRAMES, ChatItem, TuiState
+from tau_coding.tui.state import ChatItem, TuiState
 from tau_coding.tui.terminal_title import TerminalTitleController
 from tau_coding.tui.widgets import (
     LeftAlignedMarkdownHeading,
@@ -1108,6 +1110,25 @@ def test_light_theme_markdown_code_uses_aqua_without_background() -> None:
 
     assert "38;2;15;118;110" in output
     assert "38;2;15;118;110;48;2" not in output
+
+
+def test_pending_tool_invocation_uses_tool_accent_color() -> None:
+    console = Console(record=True, width=80)
+    item = ChatItem(role="tool", text="→ read README.md")
+    console.print(
+        _transcript_plain_body_text(
+            item,
+            text=item.text,
+            body_style=TAU_DARK_THEME.role_styles["tool"].body,
+            theme=TAU_DARK_THEME,
+        )
+    )
+
+    output = console.export_text(styles=True)
+
+    accent = "38;2;138;122;82;48;2;0;0;0m"
+    assert f"{accent}read" in output
+    assert f"{accent} README.md" in output
 
 
 def test_tool_chat_items_color_status_metadata_not_tool_name_or_results() -> None:
@@ -2350,6 +2371,32 @@ async def test_streaming_code_block_hides_horizontal_scrollbar_until_finalized()
         assert finalized_fence.show_horizontal_scrollbar is True
 
 
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "theme",
+    [TAU_DARK_THEME, TAU_LIGHT_THEME, HIGH_CONTRAST_THEME],
+    ids=lambda theme: theme.name,
+)
+async def test_transcript_code_fence_uses_theme_background(theme: TuiTheme) -> None:
+    """Code fences keep Tau's themed background for every built-in theme.
+
+    Regression test: Textual's built-in `MarkdownFence:light` rule outranks
+    Tau's plain `ThemedMarkdownWidget MarkdownFence` selector, which used to
+    leave light-theme code fences with a transparent white background.
+    """
+    app = TauTuiApp(
+        FakeSession([AssistantMessage(content="```python\nx = 1\n```")]),
+        tui_settings=TuiSettings(theme=theme.name),
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+
+        fence = app.query_one("MarkdownFence")
+
+    assert fence.styles.background == Color.parse(theme.markdown_code_block_background)
+
+
 def test_tui_app_uses_configured_theme_css_variables() -> None:
     app = TauTuiApp(FakeSession(), tui_settings=TuiSettings(theme="high-contrast"))
 
@@ -2947,7 +2994,7 @@ async def test_restored_tool_results_render_via_render_result() -> None:
 
 
 @pytest.mark.anyio
-async def test_pending_tool_row_shows_spinner_while_running() -> None:
+async def test_pending_tool_row_keeps_static_marker_while_running() -> None:
     session = FakeSession()
     session.extension_runtime = _RenderCallRuntime()
     app = TauTuiApp(session)  # type: ignore[arg-type]
@@ -2966,35 +3013,28 @@ async def test_pending_tool_row_shows_spinner_while_running() -> None:
                 args={"prompt": "x", "description": "Summarize codebase"},
             )
         )
-        app._tick_activity()
-        await pilot.pause()
 
         widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
-        # The spinner frame stands in for the static ▸ marker while running.
-        assert widget.selection_text[0] in TOOL_SPINNER_FRAMES
-        assert "▸" not in widget.selection_text
-        assert "Summarize codebase" in widget.selection_text
+        assert widget.selection_text == "▸ agent · Summarize codebase"
 
-        # Ticks must update the mounted widget in place — remounting every
-        # frame reads as transcript flicker.
-        first_frame = widget.selection_text[0]
+        # The run-wide activity indicator continues ticking without replacing
+        # the transcript marker with a second spinner.
+        app._tick_activity()
         app._tick_activity()
         await pilot.pause()
         same_widget = next(w for w in app.query(TranscriptMessageWidget) if w.item.role == "tool")
         assert same_widget is widget
-        assert same_widget.selection_text[0] in TOOL_SPINNER_FRAMES
-        assert same_widget.selection_text[0] != first_frame
+        assert same_widget.selection_text == "▸ agent · Summarize codebase"
 
-        # Once the tool has been working for a while, the row shows a live
-        # elapsed timer after the description.
+        # Long-running tools retain useful elapsed-time feedback alongside the
+        # same static marker.
         tool_item = next(item for item in app.state.items if item.role == "tool")
         assert tool_item.started_at is not None
         tool_item.started_at -= 83
         app._tick_activity()
         await pilot.pause()
-        assert "(1m 23s)" in widget.selection_text
+        assert widget.selection_text == "▸ agent · Summarize codebase (1m 23s)"
 
-        # Once the result lands the static marker returns.
         await stream(
             ToolExecutionEndEvent(
                 tool_call_id="call-1",
@@ -3466,6 +3506,56 @@ async def test_tui_mid_run_custom_follow_up_renders_card_not_raw_content() -> No
 
 
 @pytest.mark.anyio
+async def test_structured_assistant_redraw_preserves_extension_custom_card() -> None:
+    raw = "<task-notification>agent-1 completed</task-notification>"
+    partial = AssistantMessage()
+    final = AssistantMessage(content=[ThinkingContent(thinking="plan"), TextContent(text="done")])
+    session = FakeSession(
+        events=[
+            AgentStartEvent(),
+            MessageEndEvent(
+                message=CustomMessage(
+                    content=raw,
+                    custom_type="subagent-notification",
+                    details={"description": "Summarize codebase"},
+                )
+            ),
+            MessageStartEvent(message=partial),
+            MessageUpdateEvent(
+                message=partial,
+                assistant_message_event=ThinkingDeltaEvent(
+                    content_index=0,
+                    delta="plan",
+                    partial=partial,
+                ),
+            ),
+            MessageUpdateEvent(
+                message=partial,
+                assistant_message_event=TextDeltaEvent(
+                    content_index=1,
+                    delta="done",
+                    partial=partial,
+                ),
+            ),
+            MessageEndEvent(message=final),
+            AgentEndEvent(),
+        ]
+    )
+    session.extension_runtime = _CustomMessageRuntime()
+    app = TauTuiApp(session)
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await app._run_prompt("run")
+        await pilot.pause()
+
+        custom_widget = next(
+            widget for widget in app.query(TranscriptMessageWidget) if widget.item.role == "custom"
+        )
+        assert "✓ Summarize codebase completed" in custom_widget.selection_text
+        assert "<task-notification>" not in custom_widget.selection_text
+
+
+@pytest.mark.anyio
 async def test_tui_app_completes_custom_prompt_slash_command() -> None:
     session = FakeSession()
     session.prompt_templates = (
@@ -3836,10 +3926,15 @@ async def test_tui_app_tree_picker_branches_with_summary() -> None:
             "* assistant: Right",
         ]
         assert str(rendered_labels[0].spans[0].style) == _style_rgb(TAU_DARK_THEME.accent)
+        assert str(rendered_labels[3].spans[0].style) == _style_rgb(TAU_DARK_THEME.highlight_text)
 
         await pilot.press("up")
         await pilot.pause()
         assert tree_list.index == 2
+        left_label = tree_list.children[2].query_one(Label).render()
+        right_label = tree_list.children[3].query_one(Label).render()
+        assert str(left_label.spans[0].style) == _style_rgb(TAU_DARK_THEME.highlight_text)
+        assert str(right_label.spans[0].style) == _style_rgb(TAU_DARK_THEME.accent)
         await pilot.press("s")
         await pilot.pause()
 
@@ -4655,7 +4750,19 @@ async def test_tui_login_saves_provider_key(
 
 
 @pytest.mark.anyio
-async def test_tui_anthropic_subscription_alias_opens_oauth() -> None:
+async def test_tui_anthropic_subscription_alias_opens_oauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    login_started = asyncio.Event()
+
+    class FakeOAuthProvider:
+        async def login(self, _callbacks: object) -> OAuthCredential:
+            login_started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    fake_provider = FakeOAuthProvider()
+    monkeypatch.setattr(tui_app, "get_oauth_provider", lambda _name: fake_provider)
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
@@ -4666,6 +4773,7 @@ async def test_tui_anthropic_subscription_alias_opens_oauth() -> None:
 
         assert isinstance(app.screen, OAuthLoginScreen)
         assert app.screen.provider.name == "anthropic"
+        assert login_started.is_set()
 
 
 @pytest.mark.anyio
@@ -5754,7 +5862,57 @@ async def test_tui_app_hidden_thinking_placeholder_stays_before_streamed_answer(
 
 
 @pytest.mark.anyio
-async def test_tui_app_thinking_toggle_preserves_unrelated_widgets() -> None:
+async def test_tui_app_restored_thinking_toggles_in_persisted_order() -> None:
+    app = TauTuiApp(
+        FakeSession(
+            messages=(
+                UserMessage(content="prompt"),
+                AssistantMessage(
+                    content=[
+                        ThinkingContent(thinking="first plan"),
+                        TextContent(text="first answer"),
+                        ThinkingContent(thinking="second plan"),
+                        TextContent(text="second answer"),
+                    ]
+                ),
+            )
+        )
+    )
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        transcript = app.query_one("#transcript", TranscriptView)
+        assert [line.text for line in transcript.lines] == [
+            "prompt",
+            "Thinking… Press Ctrl+T to show thinking tokens.",
+            "first answer",
+            "Thinking… Press Ctrl+T to show thinking tokens.",
+            "second answer",
+        ]
+
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert [line.text for line in transcript.lines] == [
+            "prompt",
+            "first plan",
+            "first answer",
+            "second plan",
+            "second answer",
+        ]
+
+        await pilot.press("ctrl+t")
+        await pilot.pause()
+        assert [line.text for line in transcript.lines] == [
+            "prompt",
+            "Thinking… Press Ctrl+T to show thinking tokens.",
+            "first answer",
+            "Thinking… Press Ctrl+T to show thinking tokens.",
+            "second answer",
+        ]
+
+
+@pytest.mark.anyio
+async def test_tui_app_thinking_toggle_preserves_unrelated_items() -> None:
     app = TauTuiApp(FakeSession())
 
     async with app.run_test() as pilot:
@@ -5768,31 +5926,8 @@ async def test_tui_app_thinking_toggle_preserves_unrelated_widgets() -> None:
         await pilot.pause()
 
         transcript = app.query_one("#transcript", TranscriptView)
-        stable_widgets = [
-            widget
-            for widget in transcript.children
-            if isinstance(widget, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-            and widget.item.role != "thinking"
-        ]
-        assert len(stable_widgets) == 4
-        assert (
-            sum(
-                1
-                for widget in transcript.children
-                if isinstance(widget, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-                and widget.item.role == "thinking"
-            )
-            == 2
-        )
-
         await pilot.press("ctrl+t")
         await pilot.pause()
-        assert [
-            widget
-            for widget in transcript.children
-            if isinstance(widget, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-            and widget.item.role != "thinking"
-        ] == stable_widgets
         assert [line.text for line in transcript.lines] == [
             "first prompt",
             "plan one",
@@ -5805,23 +5940,8 @@ async def test_tui_app_thinking_toggle_preserves_unrelated_widgets() -> None:
         app.state.add_item("status", "late status")
         await transcript.append_item(app.state.items[-1])
         await pilot.pause()
-        stable_widgets.append(
-            next(
-                widget
-                for widget in reversed(transcript.children)
-                if isinstance(widget, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-                and widget.item.role == "status"
-            )
-        )
-
         await pilot.press("ctrl+t")
         await pilot.pause()
-        assert [
-            widget
-            for widget in transcript.children
-            if isinstance(widget, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-            and widget.item.role != "thinking"
-        ] == stable_widgets
         assert [line.text for line in transcript.lines] == [
             "first prompt",
             "Thinking… Press Ctrl+T to show thinking tokens.",
@@ -6006,6 +6126,31 @@ async def test_tui_prompt_worker_shows_diagnostic_log_path_for_error_event(tmp_p
     assert app.state.items[-1].role == "error"
     assert app.state.items[-1].text == app.state.error
     assert app.state.running is False
+
+
+@pytest.mark.anyio
+async def test_tui_prompt_worker_mounts_provider_error_in_live_transcript() -> None:
+    error = AssistantMessage(stop_reason="error", error_message="provider failed")
+    app = TauTuiApp(
+        FakeSession(
+            events=[
+                AgentStartEvent(),
+                MessageStartEvent(message=error),
+                MessageEndEvent(message=error),
+                AgentEndEvent(),
+            ]
+        )
+    )
+
+    async with app.run_test(size=(120, 30)) as pilot:
+        await app._run_prompt("continue")
+        await pilot.pause()
+
+        errors = [
+            widget for widget in app.query(TranscriptMessageWidget) if widget.item.role == "error"
+        ]
+        assert [widget.item.text for widget in errors] == ["Error: provider failed"]
+        assert app.state.running is False
 
 
 @pytest.mark.anyio
@@ -6250,6 +6395,89 @@ async def test_run_tui_app_falls_back_to_first_credentialed_provider(
         "run",
         "provider_closed",
     ]
+
+
+@pytest.mark.anyio
+async def test_run_tui_app_surfaces_startup_provider_error_in_login_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Regression: a non-auth RuntimeError during startup provider construction
+    # was silently replaced by a generic "Login required" placeholder, hiding the
+    # real cause. The TUI must surface the underlying error to the user.
+    captured: dict[str, object] = {}
+
+    record = CodingSessionRecord(
+        id="new-session",
+        path=tmp_path / "new-session.jsonl",
+        cwd=tmp_path,
+        model="qwen",
+        title=None,
+        created_at=1.0,
+        updated_at=1.0,
+        provider_name="local",
+    )
+
+    class FakeProvider:
+        async def aclose(self) -> None:
+            pass
+
+    class FakeManager:
+        def prepare_session(
+            self,
+            *,
+            cwd: Path,
+            model: str,
+            provider_name: str | None = None,
+        ) -> CodingSessionRecord:
+            return record
+
+        def get_session(self, session_id: str) -> CodingSessionRecord | None:
+            return None
+
+    class FakeCodingSession:
+        @classmethod
+        async def load(cls, config: object) -> str:
+            return "session"
+
+    class FakeApp:
+        def __init__(self, session: str, **kwargs: object) -> None:
+            captured["startup_message"] = kwargs["startup_message"]
+            captured["startup_notices"] = kwargs["startup_notices"]
+
+        async def run_async(self) -> None:
+            pass
+
+    settings = ProviderSettings(
+        default_provider="local",
+        providers=(
+            OpenAICompatibleProviderConfig(
+                name="local",
+                base_url="http://localhost:11434/v1",
+                api_key_env="LOCAL_API_KEY",
+                credential_name=None,
+                models=("qwen",),
+                default_model="qwen",
+            ),
+        ),
+    )
+
+    def _boom(provider: object, **kwargs: object) -> object:
+        raise RuntimeError("connection to provider backend refused")
+
+    monkeypatch.setattr(tui_app, "load_provider_settings", lambda: settings)
+    monkeypatch.setattr(tui_app, "load_tui_settings", lambda: TuiSettings())
+    monkeypatch.setattr(tui_app, "create_model_provider", _boom)
+    monkeypatch.setattr(tui_app, "LoginRequiredProvider", lambda message: FakeProvider())
+    monkeypatch.setattr(tui_app, "CodingSession", FakeCodingSession)
+    monkeypatch.setattr(tui_app, "TauTuiApp", FakeApp)
+
+    await tui_app.run_tui_app(cwd=tmp_path, model=None, session_manager=FakeManager())
+
+    startup_message = captured["startup_message"]
+    assert "Login required" in startup_message
+    assert "connection to provider backend refused" in startup_message
+    notices = captured["startup_notices"]
+    assert any("connection to provider backend refused" in n for n in notices)
 
 
 @pytest.mark.anyio
@@ -6604,7 +6832,11 @@ async def test_run_tui_app_opens_when_provider_login_is_missing(
             assert session == "session"
             message = str(kwargs["startup_message"])
             assert "Tau 0.2.0 is available" not in message
-            assert kwargs["startup_notices"] == ("Tau 0.2.0 is available",)
+            notices = kwargs["startup_notices"]
+            # The startup provider error is surfaced first, then the update notice.
+            assert any("Startup provider creation failed" in n for n in notices)
+            assert "Missing provider API key." in notices[0]
+            assert "Tau 0.2.0 is available" in notices
             assert "Login required. Run /login" in message
             assert "/login openai" in message
             assert "OPENAI_API_KEY" not in message

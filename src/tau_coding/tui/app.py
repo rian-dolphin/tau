@@ -49,7 +49,14 @@ from tau_agent.events import (
     ToolExecutionStartEvent,
     ToolExecutionUpdateEvent,
 )
-from tau_agent.messages import AgentMessage, AssistantMessage, CustomMessage, UserMessage
+from tau_agent.messages import (
+    AgentMessage,
+    AssistantMessage,
+    CustomMessage,
+    TextContent,
+    ThinkingContent,
+    UserMessage,
+)
 from tau_agent.provider import CancellationToken
 from tau_agent.provider_events import (
     AssistantErrorEvent,
@@ -98,6 +105,7 @@ from tau_coding.provider_config import (
     provider_config_from_catalog_entry,
     provider_has_usable_credentials,
     resolve_provider_selection,
+    resolve_startup_thinking_level,
     save_provider_settings,
     upsert_openai_compatible_provider,
     upsert_saved_provider,
@@ -116,7 +124,6 @@ from tau_coding.session import (
 )
 from tau_coding.session_manager import CodingSessionRecord, SessionManager
 from tau_coding.shell_config import load_shell_settings
-from tau_coding.thinking import DEFAULT_THINKING_LEVEL
 from tau_coding.tui.adapter import TuiEventAdapter
 from tau_coding.tui.autocomplete import (
     CompletionItem,
@@ -133,11 +140,7 @@ from tau_coding.tui.config import (
     load_tui_settings,
     save_tui_settings,
 )
-from tau_coding.tui.state import (
-    TOOL_SPINNER_FRAMES,
-    TuiState,
-    format_terminal_command_result_block,
-)
+from tau_coding.tui.state import TuiState, format_terminal_command_result_block
 from tau_coding.tui.terminal_title import TerminalTitleController
 from tau_coding.tui.themes import (
     available_tui_theme_names,
@@ -998,6 +1001,22 @@ class TreePickerResult:
     custom_instructions: str | None = None
 
 
+class _TreePickerListItem(ListItem):
+    """Tree entry that keeps inline label colors readable when highlighted."""
+
+    def __init__(self, choice: SessionTreeChoice, *, theme: TuiTheme) -> None:
+        self.choice = choice
+        self.theme = theme
+        super().__init__(Label(_tree_picker_label(choice, theme=theme), markup=False))
+
+    def watch_highlighted(self, value: bool) -> None:
+        """Recolor inline label spans when the list highlight changes."""
+        super().watch_highlighted(value)
+        self.query_one(Label).update(
+            _tree_picker_label(self.choice, theme=self.theme, highlighted=value)
+        )
+
+
 class TreePickerScreen(ModalScreen[TreePickerResult | None]):
     """Modal picker for branching from a previous session entry."""
 
@@ -1141,10 +1160,7 @@ class TreePickerScreen(ModalScreen[TreePickerResult | None]):
         return tuple(choice for choice in self.choices if not choice.is_tool_call)
 
     def _list_items(self) -> list[ListItem]:
-        return [
-            ListItem(Label(_tree_picker_label(choice, theme=self.theme), markup=False))
-            for choice in self._visible_choices()
-        ]
+        return [_TreePickerListItem(choice, theme=self.theme) for choice in self._visible_choices()]
 
     def _help_text(self) -> str:
         tool_call_state = "shown" if self.show_tool_calls else "hidden"
@@ -3934,8 +3950,27 @@ class TauTuiApp(App[None]):
                 self._sync_header_title()
                 return
             if isinstance(event.message, AssistantMessage):
-                await transcript.finish_assistant_message(event.message.text)
-                self._refresh_chrome()
+                if event.message.stop_reason in {"error", "aborted"}:
+                    # The adapter projected any partial response plus the error
+                    # into canonical display state. Rebuild once at this terminal
+                    # boundary so the mounted transcript cannot drop the error.
+                    self._refresh()
+                    return
+                visible_blocks = [
+                    block
+                    for block in event.message.content
+                    if isinstance(block, (TextContent, ThinkingContent))
+                ]
+                if (
+                    any(isinstance(block, ThinkingContent) for block in visible_blocks)
+                    or len(visible_blocks) > 1
+                ):
+                    # The adapter replaced provisional rows with canonical ordered
+                    # blocks. Redraw through the normal extension-aware path.
+                    self._refresh()
+                else:
+                    await transcript.finish_assistant_message(event.message.text)
+                    self._refresh_chrome()
                 return
             return
         if isinstance(event, ToolExecutionStartEvent):
@@ -4786,7 +4821,6 @@ class TauTuiApp(App[None]):
             self._apply_activity_indicator()
             return
         self._activity_frame = 0
-        self.state.tool_spinner = None
         if self._activity_timer is not None:
             self._activity_timer.pause()
         self._apply_activity_indicator()
@@ -4797,13 +4831,10 @@ class TauTuiApp(App[None]):
         self._activity_frame += 1
         self._apply_activity_indicator()
         self._sync_terminal_title()
-        self.state.tool_spinner = TOOL_SPINNER_FRAMES[
-            self._activity_frame % len(TOOL_SPINNER_FRAMES)
-        ]
-        self.call_later(self._respin_pending_tool)
+        self.call_later(self._refresh_pending_tool_timer)
 
-    async def _respin_pending_tool(self) -> None:
-        """Advance the spinner on the tool row that is currently executing."""
+    async def _refresh_pending_tool_timer(self) -> None:
+        """Refresh elapsed time on the tool row that is currently executing."""
         if not self.state.running:
             return
         item = next(
@@ -5231,7 +5262,12 @@ def _session_picker_label(record: SessionCompletionRecord) -> str:
     return " - ".join(parts)
 
 
-def _tree_picker_label(choice: SessionTreeChoice, *, theme: TuiTheme) -> Text:
+def _tree_picker_label(
+    choice: SessionTreeChoice,
+    *,
+    theme: TuiTheme,
+    highlighted: bool = False,
+) -> Text:
     marker = "* " if choice.active else "  "
     label = choice.label
     indent_width = len(label) - len(label.lstrip(" "))
@@ -5240,7 +5276,8 @@ def _tree_picker_label(choice: SessionTreeChoice, *, theme: TuiTheme) -> Text:
     author, separator, rest = body.partition(":")
     text = Text(f"{marker}{indent}")
     if separator:
-        text.append(author, style=theme.accent)
+        author_color = theme.highlight_text if highlighted else theme.accent
+        text.append(author, style=author_color)
         text.append(f"{separator}{rest}")
     else:
         text.append(body)
@@ -5787,19 +5824,29 @@ async def run_tui_app(
         explicit_resume=session_id is not None,
     )
     startup_message: str | None = None
+    startup_error_notice: str | None = None
     runtime_provider_config: ProviderConfig | None = selection.provider
     try:
         provider = create_model_provider(
             selection.provider,
             model=selection.model,
-            thinking_level=DEFAULT_THINKING_LEVEL,
+            thinking_level=resolve_startup_thinking_level(
+                selection.provider,
+                selection.model,
+            ),
         )
-    except RuntimeError:
+    except RuntimeError as exc:
+        # Most startup RuntimeErrors are missing credentials, but surface the real
+        # cause so a non-auth failure is not silently misreported as "Login required".
         login_required_message = (
             "Login required. Run /login to choose a provider, "
             f"or /login {selection.provider.name} to continue with the current provider."
         )
-        startup_message = login_required_message
+        startup_message = f"{login_required_message}\n\nStartup error: {exc}"
+        startup_error_notice = (
+            f"Startup provider creation failed for "
+            f"{selection.provider.name}:{selection.model}: {exc}"
+        )
         provider = LoginRequiredProvider(startup_message)
         runtime_provider_config = None
     session: CodingSession | None = None
@@ -5837,8 +5884,11 @@ async def run_tui_app(
         )
         set_custom_tui_themes(custom_themes)
         legacy_notices = (startup_notice,) if startup_notice else ()
+        error_notices = (startup_error_notice,) if startup_error_notice else ()
         theme_notices = tuple(diagnostic.format() for diagnostic in theme_diagnostics)
-        all_startup_notices = tuple((*startup_notices, *legacy_notices, *theme_notices))
+        all_startup_notices = tuple(
+            (*error_notices, *startup_notices, *legacy_notices, *theme_notices)
+        )
         app = TauTuiApp(
             session,
             tui_settings=load_tui_settings(),

@@ -173,6 +173,13 @@ class ThemedMarkdownWidget(TextualMarkdown):
         scrollbar-size-horizontal: 1;
     }
 
+    /* Textual's built-in `MarkdownFence:light` rule (type + pseudo-class)
+       outranks the plain descendant selector above, so restate the themed
+       background for light themes. */
+    ThemedMarkdownWidget MarkdownFence:light {
+        background: $tau-markdown-code-block-background;
+    }
+
     ThemedMarkdownWidget MarkdownTableContent {
         keyline: thin $tau-markdown-table-border;
     }
@@ -541,83 +548,14 @@ class TranscriptView(VerticalScroll):
         *,
         theme: TuiTheme = TAU_DARK_THEME,
     ) -> None:
-        """Update only thinking-token widgets after visibility changes."""
+        """Rebuild canonical transcript order after thinking visibility changes."""
         self._render_state = state
         self._render_theme = theme
         should_follow = self._should_follow_output
         previous_scroll_y = self.scroll_y
 
-        message_children = [
-            child
-            for child in self.children
-            if isinstance(child, TranscriptMessageWidget | StreamingTranscriptMessageWidget)
-        ]
-        thinking_children = [child for child in message_children if child.item.role == "thinking"]
-        if thinking_children:
-            self.remove_children(thinking_children)
-
-        non_thinking_children = [
-            child for child in message_children if child.item.role != "thinking"
-        ]
-        non_thinking_index = 0
-        pending_thinking: list[TranscriptMessageWidget] = []
-        hidden_thinking_placeholder = False
-
-        def flush_pending(
-            *, before: TranscriptMessageWidget | StreamingTranscriptMessageWidget | None
-        ) -> None:
-            nonlocal pending_thinking
-            for widget in pending_thinking:
-                self.mount(widget, before=before)
-            pending_thinking = []
-
-        for item in state.items:
-            if item.role == "thinking":
-                if state.show_thinking:
-                    pending_thinking.append(
-                        TranscriptMessageWidget(
-                            item,
-                            theme=theme,
-                            show_tool_results=state.show_tool_results,
-                        )
-                    )
-                elif not hidden_thinking_placeholder:
-                    pending_thinking.append(
-                        TranscriptMessageWidget(
-                            ChatItem(role="thinking", text=_HIDDEN_THINKING_PLACEHOLDER),
-                            theme=theme,
-                            show_tool_results=state.show_tool_results,
-                        )
-                    )
-                    hidden_thinking_placeholder = True
-                continue
-
-            hidden_thinking_placeholder = False
-            target = None
-            while non_thinking_index < len(non_thinking_children):
-                candidate = non_thinking_children[non_thinking_index]
-                non_thinking_index += 1
-                if candidate.item is item:
-                    target = candidate
-                    break
-            if target is not None:
-                flush_pending(before=target)
-
-        tail_child = (
-            non_thinking_children[non_thinking_index]
-            if non_thinking_index < len(non_thinking_children)
-            else None
-        )
-        flush_pending(before=tail_child)
-        self._active_thinking_widget = None
-        self._hidden_thinking_placeholder_visible = (
-            _last_transcript_child_is_hidden_thinking_placeholder(self.children)
-        )
-        self._last_render_width = self.scrollable_content_region.width
-        self.refresh(layout=True)
-        if should_follow:
-            self._request_follow_scroll()
-        else:
+        self._redraw(scroll_end=should_follow)
+        if not should_follow:
             self.call_after_refresh(
                 lambda: self.scroll_to(y=previous_scroll_y, animate=False, immediate=True)
             )
@@ -686,13 +624,14 @@ class TranscriptView(VerticalScroll):
                 )
             )
         if state.assistant_buffer:
-            self.mount(
-                TranscriptMessageWidget(
-                    ChatItem(role="assistant", text=state.assistant_buffer),
-                    theme=theme,
-                    show_tool_results=state.show_tool_results,
-                )
+            self._active_assistant_widget = StreamingTranscriptMessageWidget(
+                ChatItem(role="assistant", text=state.assistant_buffer),
+                theme=theme,
             )
+            self.mount(self._active_assistant_widget)
+        self._hidden_thinking_placeholder_visible = (
+            _last_transcript_child_is_hidden_thinking_placeholder(self.children)
+        )
         self.refresh(layout=True)
         if scroll_end:
             self._request_follow_scroll()
@@ -1234,8 +1173,10 @@ def _chat_item_role_style(item: ChatItem, theme: TuiTheme) -> TuiRoleStyle:
 def _tool_accent_style(item: ChatItem, *, theme: TuiTheme) -> str | None:
     # Bare colors: the accent span inherits its background from the tool body
     # style, so it blends with any theme's transcript background.
-    if item.role != "tool" or not item.tool_result_text:
+    if item.role != "tool":
         return None
+    if item.tool_result_text is None:
+        return theme.role_styles["tool"].border
     if item.tool_result_text.startswith("✓"):
         return theme.tool_success_text
     if item.tool_result_text.startswith("✗"):
