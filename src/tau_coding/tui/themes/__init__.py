@@ -18,6 +18,8 @@ from typing import Literal, get_args
 from rich.color import Color, ColorParseError
 from rich.errors import StyleSyntaxError
 from rich.style import Style
+from textual.color import Color as TextualColor
+from textual.color import ColorParseError as TextualColorParseError
 
 from tau_coding.resources import ResourceDiagnostic
 
@@ -105,6 +107,17 @@ _RICH_STYLE_FIELDS = {
     "completion_selected",
     "completion_selected_description",
     "completion_description",
+}
+
+# Single-color fields only ever rendered through Rich. Every other color field
+# reaches Textual too (CSS variables, Theme slots, or widget styles), and Rich
+# accepts colors Textual rejects (bright_red, grey50, color(1), default), so
+# those fields must parse under both libraries. New fields default to the
+# strict dual check: a field missing from this set rejects a theme with a
+# diagnostic instead of crashing the TUI when the theme is applied.
+_RICH_ONLY_COLOR_FIELDS = {
+    "tool_success_text",
+    "tool_error_text",
 }
 
 # Var names that would corrupt Rich style strings during token substitution.
@@ -230,8 +243,10 @@ def _parse_colors(
         resolved = _substitute_vars(raw.strip(), variables)
         if field_name in _RICH_STYLE_FIELDS:
             error = _style_problem(resolved)
-        else:
+        elif field_name in _RICH_ONLY_COLOR_FIELDS:
             error = _color_problem(resolved)
+        else:
+            error = _color_problem(resolved) or _textual_color_problem(resolved)
         if error is not None:
             problems.append(f"colors.{field_name} {error}")
             continue
@@ -267,10 +282,13 @@ def _parse_roles(
             continue
         resolved_border = _substitute_vars(border.strip(), variables)
         resolved_body = _substitute_vars(body.strip(), variables)
-        border_error = _color_problem(resolved_border)
+        # Borders feed Textual's styles.border_left as well as Rich tables.
+        border_error = _color_problem(resolved_border) or _textual_color_problem(resolved_border)
         if border_error is not None:
             problems.append(f"roles.{role}.border {border_error}")
-        body_error = _style_problem(resolved_body)
+        # Body colors also feed Textual's styles.color/background in the
+        # transcript, so both style components must satisfy Textual too.
+        body_error = _style_problem(resolved_body) or _textual_style_colors_problem(resolved_body)
         if body_error is not None:
             problems.append(f"roles.{role}.body {body_error}")
         if border_error is None and body_error is None:
@@ -283,6 +301,24 @@ def _color_problem(value: str) -> str | None:
         Color.parse(value)
     except ColorParseError:
         return f"is not a valid color: {value!r}"
+    return None
+
+
+def _textual_color_problem(value: str) -> str | None:
+    try:
+        TextualColor.parse(value)
+    except TextualColorParseError:
+        return f"is not a color Textual accepts: {value!r}"
+    return None
+
+
+def _textual_style_colors_problem(value: str) -> str | None:
+    style = Style.parse(value)
+    for color in (style.color, style.bgcolor):
+        if color is not None and color.name is not None:
+            error = _textual_color_problem(color.name)
+            if error is not None:
+                return error
     return None
 
 

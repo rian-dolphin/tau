@@ -96,6 +96,84 @@ def test_parse_theme_rejects_unparseable_colors_and_styles() -> None:
     assert "roles.user.body" in message
 
 
+@pytest.mark.parametrize("color", ["bright_red", "color(123)", "grey50", "default"])
+def test_parse_theme_rejects_rich_only_colors_in_textual_fields(color: str) -> None:
+    # Rich's parser accepts these, but Textual's does not; they would crash
+    # the TUI when the theme's CSS variables are applied.
+    data = _theme_data()
+    data["colors"]["accent"] = color
+
+    with pytest.raises(TuiThemeError, match="colors.accent"):
+        parse_tui_theme_json(data)
+
+
+@pytest.mark.parametrize("color", ["tomato", "ansi_red", "#ff000080"])
+def test_parse_theme_rejects_textual_only_colors_in_shared_fields(color: str) -> None:
+    # Shared fields also render through Rich, so colors must satisfy both
+    # parsers; Textual-only syntax is rejected just like Rich-only syntax.
+    data = _theme_data()
+    data["colors"]["accent"] = color
+
+    with pytest.raises(TuiThemeError, match="colors.accent"):
+        parse_tui_theme_json(data)
+
+
+def test_parse_theme_allows_rich_only_colors_in_rich_only_fields() -> None:
+    data = _theme_data()
+    data["colors"]["tool_success_text"] = "bright_green"
+    data["colors"]["tool_error_text"] = "color(160)"
+    data["colors"]["completion_selected"] = "bold grey50 on #101010"
+
+    theme = parse_tui_theme_json(data)
+
+    assert theme.tool_success_text == "bright_green"
+    assert theme.completion_selected == "bold grey50 on #101010"
+
+
+@pytest.mark.parametrize("body", ["bright_white on #101010", "#e0e0e0 on grey11", "default"])
+def test_parse_theme_rejects_rich_only_colors_in_role_bodies(body: str) -> None:
+    # Body foreground/background colors feed Textual's styles.color and
+    # styles.background, so they must parse under both libraries.
+    data = _theme_data()
+    data["roles"]["user"] = {"border": "#101010", "body": body}
+
+    with pytest.raises(TuiThemeError, match="roles.user.body"):
+        parse_tui_theme_json(data)
+
+
+def test_parse_theme_rejects_rich_only_colors_in_role_borders() -> None:
+    # Role borders feed Textual's styles.border_left as well as Rich tables.
+    data = _theme_data()
+    data["roles"]["user"] = {"border": "bright_red", "body": "#e0e0e0"}
+
+    with pytest.raises(TuiThemeError, match="roles.user.border"):
+        parse_tui_theme_json(data)
+
+
+def test_parse_theme_rejects_rich_only_var_resolved_into_textual_field() -> None:
+    data = _theme_data(vars={"base": "grey50"})
+    data["colors"]["screen_background"] = "base"
+
+    with pytest.raises(TuiThemeError, match="colors.screen_background"):
+        parse_tui_theme_json(data)
+
+
+def test_load_custom_themes_skips_textual_invalid_color_with_diagnostic(
+    tmp_path: Path,
+) -> None:
+    themes_dir = tmp_path / "themes"
+    crashy = _theme_data(name="crashy")
+    crashy["colors"]["accent"] = "bright_red"
+    _write_theme(themes_dir, "crashy.json", crashy)
+
+    themes, diagnostics = load_custom_tui_themes([themes_dir])
+
+    assert themes == {}
+    assert len(diagnostics) == 1
+    assert diagnostics[0].kind == "invalid-theme"
+    assert "colors.accent" in diagnostics[0].message
+
+
 def test_parse_theme_reports_all_problems_at_once() -> None:
     data = _theme_data()
     del data["colors"]["accent"]

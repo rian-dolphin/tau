@@ -64,11 +64,18 @@ see [Configuration]({{< relref "../reference/configuration.md#tui-settings" >}})
   `tool_error_text` colors for tool invocation text. The full list is
   `THEME_COLOR_FIELDS` in `src/tau_coding/tui/themes/__init__.py`; the
   built-in theme JSON files show them all in context.
+  Most colors are rendered by both Rich and Textual, so stick to formats both
+  accept — six-digit hex like `#94e2d5` is always safe. Library-specific
+  syntax such as Rich's `bright_red` / `grey50` or Textual's `ansi_red` /
+  `#ff000080` is rejected, except in the Rich-only `tool_success_text` /
+  `tool_error_text` fields and the `completion_*` style strings.
 - `roles` (required) — `border` and `body` styles for each transcript role:
   `user`, `assistant`, `tool`, `error`, `status`, `thinking`, `skill`,
   `custom` (extension messages), `branch_summary`, `compaction_summary`.
   `body` is a Rich style string, so
-  it can carry a background (`"#cdd6f4 on #1e1e2e"`). The `border` is the
+  it can carry a background (`"#cdd6f4 on #1e1e2e"`); its colors also tint
+  the surrounding Textual widget, so like the palette colors they must use
+  formats both libraries accept. The `border` is the
   colored bar beside each transcript block; completed tool calls override the
   `tool` border with `success` or `error`.
 
