@@ -28,8 +28,6 @@ from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import (
     Button,
-    Footer,
-    Header,
     Input,
     Label,
     ListItem,
@@ -152,7 +150,7 @@ from tau_coding.tui.widgets import (
 
 type BindingEntry = Binding | tuple[str, str] | tuple[str, str, str]
 SIDEBAR_MIN_WIDTH = 96
-SIDEBAR_MIN_HEIGHT = 24
+SIDEBAR_MIN_HEIGHT = 38
 ACTIVITY_TICK_SECONDS = 0.15
 ACTIVITY_COLOR_FADE_STEPS = 24
 ACTIVITY_INDICATOR_HEIGHT = 3
@@ -2362,33 +2360,6 @@ class TauTuiApp(App[None]):
         color: $tau-screen-text;
     }
 
-    Header {
-        background: $tau-chrome-background;
-        color: $tau-muted-text;
-        dock: top;
-    }
-
-    Footer {
-        background: $tau-chrome-background;
-        color: $tau-chrome-text;
-    }
-
-    Footer FooterKey {
-        background: $tau-chrome-background;
-        color: $tau-chrome-text;
-    }
-
-    Footer FooterKey .footer-key--key {
-        background: $tau-chrome-background;
-        color: $tau-accent;
-    }
-
-    Footer FooterKey .footer-key--description,
-    Footer FooterLabel {
-        background: $tau-chrome-background;
-        color: $tau-chrome-text;
-    }
-
     Toast {
         background: $tau-chrome-background;
         color: $tau-chrome-text;
@@ -2403,12 +2374,21 @@ class TauTuiApp(App[None]):
     }
 
     #sidebar {
-        width: 32;
-        min-width: 28;
+        width: 40;
+        min-width: 36;
         height: 1fr;
-        padding: 1 1 0 0;
-        background: $tau-sidebar-background;
-        border-right: tall $tau-border;
+        padding: 1 1 1 2;
+        background: $tau-prompt-background;
+        border: none;
+    }
+
+    #sidebar-content {
+        height: 1fr;
+    }
+
+    #sidebar-brand {
+        height: auto;
+        color: $tau-prompt-text;
     }
 
     TauTuiApp.-hide-sidebar #sidebar {
@@ -2421,8 +2401,6 @@ class TauTuiApp(App[None]):
 
     TauTuiApp.-sidebar-right #sidebar {
         dock: right;
-        border-right: none;
-        border-left: tall $tau-border;
     }
 
     #main-pane {
@@ -2497,18 +2475,19 @@ class TauTuiApp(App[None]):
         height: auto;
         background: $tau-prompt-background;
         color: $tau-prompt-text;
-        border: tall transparent;
+        border: none;
+        border-left: tall transparent;
         margin: 0;
-        padding: 0 1;
+        padding: 1 1;
         max-height: 8;
     }
 
     #prompt:focus {
-        border: tall $tau-prompt-border;
+        border-left: tall $tau-prompt-border;
     }
 
     #prompt.-shell-mode {
-        border: tall $tau-accent;
+        border-left: tall $tau-accent;
     }
 
     #compact-session-info {
@@ -2880,12 +2859,10 @@ class TauTuiApp(App[None]):
         self._terminal_title = TerminalTitleController()
         self._active_notification_keys: set[tuple[str, str]] = set()
         self._supports_pyperclip: bool | None = None
-        self._sync_header_title()
+        self._sync_session_title()
 
-    def _sync_header_title(self) -> None:
-        """Reflect the active session name in Textual's header state."""
-        self.title = "Tau"
-        self.sub_title = _session_header_sub_title(self.session)
+    def _sync_session_title(self) -> None:
+        """Reflect the active session name in the terminal tab title."""
         self._sync_terminal_title()
 
     def _sync_terminal_title(self) -> None:
@@ -2948,7 +2925,6 @@ class TauTuiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         """Compose the TUI widgets."""
-        yield Header()
         with Horizontal(id="workspace"):
             yield SessionSidebar(id="sidebar")
             with Vertical(id="main-pane"):
@@ -2974,7 +2950,6 @@ class TauTuiApp(App[None]):
                 yield CompactSessionInfo(id="compact-session-info")
                 yield Static("", id="autocomplete")
                 yield Container(id="below-prompt-slot")
-        yield Footer()
 
     async def on_mount(self) -> None:
         """Focus the prompt when the app starts."""
@@ -3376,7 +3351,7 @@ class TauTuiApp(App[None]):
                     item.text = event.message.text
                     break
             self._refresh()
-            self._sync_header_title()
+            self._sync_session_title()
             return True
         return False
 
@@ -4034,7 +4009,7 @@ class TauTuiApp(App[None]):
         if isinstance(event, MessageEndEvent):
             if isinstance(event.message, (UserMessage, CustomMessage)):
                 await self._append_confirmed_user_message(event.message)
-                self._sync_header_title()
+                self._sync_session_title()
                 return
             if isinstance(event.message, AssistantMessage):
                 if event.message.stop_reason in {"error", "aborted"}:
@@ -4905,7 +4880,7 @@ class TauTuiApp(App[None]):
     def _refresh_chrome(self, *, theme: TuiTheme | None = None) -> None:
         """Refresh non-transcript chrome without remounting transcript blocks."""
         theme = theme or self.tui_settings.resolved_theme
-        self._sync_header_title()
+        self._sync_session_title()
         self._sync_text_selection_state()
         self._sync_queue_state()
         sidebar = self.query_one("#sidebar", SessionSidebar)
@@ -5008,7 +4983,7 @@ class TauTuiApp(App[None]):
         if render_key == self._last_activity_indicator_key:
             return
         self._last_activity_indicator_key = render_key
-        prompt.styles.border = (
+        prompt.styles.border_left = (
             "tall",
             _activity_prompt_border_color(
                 theme,
@@ -5080,7 +5055,6 @@ class TauTuiApp(App[None]):
             return COMPLETION_MAX_VISIBLE_LINES
 
         reserved_rows = COMPLETION_MIN_TRANSCRIPT_LINES + COMPLETION_WIDGET_CHROME_LINES
-        reserved_rows += 2  # Header and footer.
         for selector in ("#prompt-row", "#compact-session-info", "#queued-messages"):
             with suppress(NoMatches):
                 widget = self.query_one(selector)
@@ -5468,12 +5442,6 @@ def _named_session_title(title: str | None) -> str | None:
     if not stripped or stripped.lower() == "untitled session":
         return None
     return stripped
-
-
-def _session_header_sub_title(session: CodingSession) -> str:
-    """Return the session label shown beside Tau in the TUI header."""
-    title = _named_session_title(getattr(session, "session_title", None))
-    return title or "Untitled session"
 
 
 def _login_provider_label(provider: ProviderCatalogEntry) -> str:
