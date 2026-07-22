@@ -228,6 +228,7 @@ The built-in frontend reads optional settings from `~/.tau/tui.json`:
 {
   "theme": "high-contrast",
   "sidebar_position": "right",
+  "turn_notification": "desktop",
   "keybindings": {
     "cancel": "escape",
     "command_palette": "ctrl+k",
@@ -258,6 +259,14 @@ keybinding names, empty keys, and duplicate assignments.
 - `sidebar_position`: `"right"` (default), `"left"`, or `"off"`. Controls
   placement of the session metadata sidebar. `"off"` hides the sidebar entirely;
   the compact session info row below the prompt still works.
+- `turn_notification`: `"desktop"` (default), `"bell"`, or `"off"`. When Tau's
+  terminal surface is unfocused and the agent becomes fully idle, `"desktop"`
+  selects OSC 9 for Ghostty, iTerm2, and MinTTY, or Kitty's OSC 99 protocol for
+  Kitty. Unknown terminals receive no sequence rather than an incompatible one.
+  `"bell"` explicitly emits the standard terminal bell so the terminal can mark
+  the tab or request attention instead; depending on terminal settings, BEL may
+  play a sound. Desktop notifications can also use the operating system's
+  configured notification sound. No notification is emitted while Tau has focus.
 
 Full list in [Keyboard shortcuts]({{< relref "./keybindings.md" >}}).
 
